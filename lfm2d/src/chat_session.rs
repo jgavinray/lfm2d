@@ -49,8 +49,6 @@
 use crate::adjudicator::AdjudicatorInfo;
 use crate::chat::{Message, TemplateValue};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::sync::Arc;
 
 /// Lowercase hex sha256 of the ids, each as four little-endian bytes.
 pub fn checkpoint_id(ids: &[u32]) -> String {
@@ -71,74 +69,10 @@ pub enum CheckpointKind {
     ChatTurn,
 }
 
-/// Content-addressed prefixes under a byte budget, least recently used
-/// evicted first. Pure bookkeeping (no model), so the rules are unit-tested
-/// below; the adjudicator stores [`ChatCheckpoint`]s in it.
-pub(crate) struct CheckpointStore<T> {
-    budget: usize,
-    used: usize,
-    /// Front: least recently used.
-    entries: VecDeque<Entry<T>>,
-}
-struct Entry<T> {
-    id: String,
-    bytes: usize,
-    value: Arc<T>,
-}
-impl<T> CheckpointStore<T> {
-    pub(crate) fn new(budget: usize) -> Self {
-        Self { budget, used: 0, entries: VecDeque::new() }
-    }
-    pub(crate) fn budget(&self) -> usize {
-        self.budget
-    }
-    pub(crate) fn used(&self) -> usize {
-        self.used
-    }
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
-    /// The entry, recency untouched.
-    pub(crate) fn peek(&self, id: &str) -> Option<&Arc<T>> {
-        self.entries.iter().find(|e| e.id == id).map(|e| &e.value)
-    }
-    /// The entry, touched to most recently used. A caller holds the `Arc`
-    /// it gets, so an eviction afterwards cannot pull the state out from
-    /// under a job that already has it.
-    pub(crate) fn get(&mut self, id: &str) -> Option<Arc<T>> {
-        let at = self.entries.iter().position(|e| e.id == id)?;
-        let entry = self.entries.remove(at).expect("position came from this deque");
-        let value = entry.value.clone();
-        self.entries.push_back(entry);
-        Some(value)
-    }
-    /// Hold `value` under `id`, evicting the least recently used until it
-    /// fits; returns the evicted ids. An id already held keeps its value
-    /// (touched): the canonical schedule makes a second computation of the
-    /// same ids the same state, so there is nothing to replace. An entry
-    /// larger than the whole budget is refused, never admitted by emptying
-    /// the store for something that still would not fit.
-    pub(crate) fn insert(&mut self, id: String, bytes: usize, value: Arc<T>) -> Result<Vec<String>, String> {
-        if self.get(&id).is_some() {
-            return Ok(Vec::new());
-        }
-        if bytes > self.budget {
-            return Err(format!(
-                "a checkpoint of {bytes} bytes exceeds the whole checkpoint budget of {} bytes",
-                self.budget
-            ));
-        }
-        let mut evicted = Vec::new();
-        while self.used + bytes > self.budget {
-            let old = self.entries.pop_front().expect("used > 0 means an entry is held");
-            self.used -= old.bytes;
-            evicted.push(old.id);
-        }
-        self.used += bytes;
-        self.entries.push_back(Entry { id, bytes, value });
-        Ok(evicted)
-    }
-}
+/// The chat checkpoints' store: [`crate::state_store::StateStore`], by
+/// bytes under `--chat-checkpoint-budget-mib`, apart from the caches' so a
+/// burst of reads can never evict a chat's user-facing ids.
+pub(crate) type CheckpointStore<T> = crate::state_store::StateStore<T>;
 
 /// One held prefix: its ids, their text (the bytes a read's
 /// `rendered_sha256` covers) and the model's state after them. No logits:
@@ -149,6 +83,11 @@ pub(crate) struct ChatCheckpoint {
     pub(crate) ids: Vec<u32>,
     pub(crate) text: String,
     pub(crate) state: candle_transformers::models::quantized_lfm2_moe::State,
+    /// The ids of the specs this chat has been tail-read with, on this
+    /// checkpoint or one before it in the chain: the checkpoints a turn
+    /// leaves inherit them, and get those specs' tail prefixes filled in
+    /// the background.
+    pub(crate) read_specs: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 fn default_max_tokens() -> usize {
@@ -321,50 +260,6 @@ mod tests {
         assert!(is_checkpoint_id(&checkpoint_id(&[])));
         assert!(!is_checkpoint_id(&checkpoint_id(&[7]).to_uppercase()));
         assert!(!is_checkpoint_id("abc"));
-    }
-
-    #[test]
-    fn the_store_evicts_least_recently_used_by_bytes_not_by_count() {
-        let mut store = CheckpointStore::new(100);
-        assert!(store.insert("a".into(), 40, Arc::new(1)).unwrap().is_empty());
-        assert!(store.insert("b".into(), 40, Arc::new(2)).unwrap().is_empty());
-        assert_eq!(store.used(), 80);
-        // Touch `a`: `b` is now the least recently used.
-        assert_eq!(store.get("a").as_deref(), Some(&1));
-        assert_eq!(store.insert("c".into(), 30, Arc::new(3)).unwrap(), ["b"]);
-        assert_eq!(store.used(), 70);
-        // Many small entries fit where one large one did.
-        for i in 0..3 {
-            assert!(store.insert(format!("s{i}"), 10, Arc::new(10 + i)).unwrap().is_empty());
-        }
-        assert_eq!(store.len(), 5);
-        assert_eq!(store.used(), 100);
-        // A large entry evicts oldest first until it fits, and no further.
-        assert_eq!(store.insert("big".into(), 60, Arc::new(9)).unwrap(), ["a", "c"]);
-        assert_eq!(store.used(), 90);
-        assert!(store.get("s0").is_some());
-        assert!(store.get("b").is_none() && store.get("a").is_none());
-    }
-
-    #[test]
-    fn the_store_keeps_the_first_value_for_an_id_and_refuses_what_cannot_fit() {
-        let mut store = CheckpointStore::new(50);
-        store.insert("a".into(), 20, Arc::new("first")).unwrap();
-        assert!(store.insert("a".into(), 20, Arc::new("second")).unwrap().is_empty());
-        assert_eq!(store.used(), 20, "charged once");
-        assert_eq!(store.get("a").as_deref(), Some(&"first"));
-        let err = store.insert("huge".into(), 51, Arc::new("x")).unwrap_err();
-        assert!(err.contains("budget"), "{err}");
-        assert_eq!(store.get("a").as_deref(), Some(&"first"), "a refusal evicts nothing");
-    }
-
-    #[test]
-    fn an_evicted_entry_lives_on_in_the_hands_of_a_job_that_holds_it() {
-        let mut store = CheckpointStore::new(10);
-        store.insert("a".into(), 10, Arc::new(vec![1, 2, 3])).unwrap();
-        let held = store.get("a").unwrap();
-        assert_eq!(store.insert("b".into(), 10, Arc::new(vec![])).unwrap(), ["a"]);
-        assert_eq!(*held, vec![1, 2, 3]);
     }
 
     #[test]

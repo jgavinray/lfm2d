@@ -581,6 +581,15 @@ pub trait Generator: Send + 'static {
         let _ = (request, events, at);
         Err(Failure::Internal("this generator does not chat".into()))
     }
+    /// One task of the generator's own background work, run by the worker
+    /// only when every queue is empty; `false` when there is none. It
+    /// pauses like a generation (the same [`YieldPoint`] rule), and nothing
+    /// that removes a spec runs at its pauses. Nobody waits on it, so a
+    /// failure is the generator's to log, never a reply.
+    fn background(&mut self, at: &dyn YieldPoint<Self>) -> bool {
+        let _ = at;
+        false
+    }
 }
 
 /// `POST /v1/opinion/specs`'s result: the spec's own menu entry, whether
@@ -831,10 +840,14 @@ mod best_prefix_match_tests {
     }
 }
 
+/// A spec's resident prefix. Its derived states (the ready prompt, the
+/// described states, tail prefixes) live in the shared, byte-bounded
+/// [`StateCache`], keyed by this spec's id.
 struct PromptCache {
+    /// The owning spec's id: the key its entries in [`StateCache`] carry.
+    spec: String,
     prefix: ModelState,
     prefix_ids: Vec<u32>,
-    ready: Option<PreparedPrompt>,
 }
 /// What [`PromptCache::lookup`] found for an input: the ready entry (a
 /// complete evaluation, cloned out), or where a prefill has to start.
@@ -845,11 +858,10 @@ enum Lookup {
 impl PromptCache {
     /// The read half of [`PromptCache::prepare`]. Everything it returns is
     /// cloned out (`State::clone` shares the immutable prefix buffers), so
-    /// the caller holds no borrow of the cache while it prefills: a
+    /// the caller holds no borrow of any cache while it prefills: a
     /// generative adjudication pauses there, and an opinion read served at
-    /// the pause may prepare on this same cache
-    /// ([`YieldPoint::pause`]).
-    fn lookup(&self, model: &Model, full: &[u32], use_cache: bool) -> Result<Lookup, Failure> {
+    /// the pause may prepare on this same spec ([`YieldPoint::pause`]).
+    fn lookup(&self, states: &mut StateCache, model: &Model, full: &[u32], use_cache: bool) -> Result<Lookup, Failure> {
         if !model.owns_state(&self.prefix) {
             return Err(Failure::Internal(
                 "input checkpoint belongs to another model".into(),
@@ -860,15 +872,8 @@ impl PromptCache {
                 "rendered input changes cached token prefix or has no suffix".into(),
             ));
         }
-        if use_cache
-            && let Some(ready) = &self.ready
-            && ready.token_ids == full
-        {
-            return Ok(Lookup::Ready(PreparedEvaluation {
-                state: ready.state.clone(),
-                logits: ready.logits.clone(),
-                cached_tokens: full.len(),
-            }));
+        if use_cache && let Some(ready) = states.ready(&self.spec, full) {
+            return Ok(Lookup::Ready(ready));
         }
         Ok(if use_cache {
             Lookup::Cold {
@@ -882,35 +887,27 @@ impl PromptCache {
             }
         })
     }
-    /// The write half: replace the one ready entry with a COMPLETE prefill
-    /// of `full`. Callers publish only after the last chunk, a device
-    /// synchronize and a final check, so a failed or cancelled preparation
-    /// leaves the previous entry; later decode never mutates the saved
-    /// state/logits (they are clones).
-    fn publish(&mut self, full: &[u32], state: &ModelState, logits: &Tensor) {
-        self.ready = Some(PreparedPrompt {
-            token_ids: full.to_vec(),
-            state: state.clone(),
-            logits: logits.clone(),
-        });
-    }
     fn prepare(
-        &mut self,
+        &self,
+        states: &mut StateCache,
         model: &Model,
         full: &[u32],
         use_cache: bool,
         check: &dyn Fn() -> Result<(), Failure>,
     ) -> Result<PreparedEvaluation, Failure> {
         check()?;
-        let (mut state, start) = match self.lookup(model, full, use_cache)? {
+        let (mut state, start) = match self.lookup(states, model, full, use_cache)? {
             Lookup::Ready(ready) => return Ok(ready),
             Lookup::Cold { state, start } => (state, start),
         };
         let logits = forward_chunks(model, &mut state, &full[start..], CHUNK, &mut || check())?;
+        // Publish only a complete prefill: a failed or cancelled one leaves
+        // the previous entry, and later decode never mutates what was saved
+        // (it holds clones).
         logits.device().synchronize()?;
         check()?;
         if use_cache {
-            self.publish(full, &state, &logits);
+            states.put_ready(&self.spec, full, &state, &logits)?;
         }
         Ok(PreparedEvaluation {
             state,
@@ -934,6 +931,15 @@ pub struct Checkpoint {
     pub execution: crate::device::ExecutionDevice,
     pub state_size: StateSize,
 }
+/// What a held state costs on the device beyond its KV and convolution
+/// tensors, which [`StateSize::bytes`] adds to every state. Measured
+/// 2026-09-26 on ROCm gfx1151 (`tests/state_bytes_real.rs`: one process per
+/// case, 4-state marginals, the device's per-process account; two runs,
+/// identical): 80 KiB over KV + conv for a prefilled state at 200, 1000 and
+/// 2000 tokens and for a forked one at 208, 2008 and 3008; 592 KiB for a
+/// fork at 1008. 1 MiB covers every reading.
+pub const STATE_SLACK_BYTES: usize = 1 << 20;
+
 /// What one model state costs, read off the GGUF: the byte accounting of the
 /// chat checkpoint store (`crate::chat_session`). An upper bound, never an
 /// estimate that could come in low.
@@ -944,6 +950,8 @@ pub struct StateSize {
     pub kv_bytes_per_token: usize,
     /// Every convolution layer's state, at most `hidden` × `l_cache` f32s.
     pub conv_bytes: usize,
+    /// One row of logits, which the ready and described caches hold.
+    pub logits_bytes: usize,
     /// The model's own context: the KV allocator never rounds past it.
     pub context: usize,
 }
@@ -961,6 +969,7 @@ impl StateSize {
         let heads = number("attention.head_count")?;
         let l_cache = number("shortconv.l_cache")?;
         let context = number("context_length")?;
+        let vocab = number("vocab_size")?;
         let kv: Vec<usize> = match ct.metadata.get("lfm2moe.attention.head_count_kv") {
             Some(gguf_file::Value::Array(v)) => v
                 .iter()
@@ -979,19 +988,22 @@ impl StateSize {
         Ok(Self {
             kv_bytes_per_token: kv.iter().sum::<usize>() * (hidden / heads) * 2 * f32_bytes,
             conv_bytes: kv.iter().filter(|&&k| k == 0).count() * hidden * l_cache * f32_bytes,
+            logits_bytes: vocab * f32_bytes,
             context,
         })
     }
-    /// Bytes charged for a state of `len` positions: KV
-    /// capacity rounded up as the allocator rounds it (a power of two, at
-    /// least 128, at most the model's context).
+    /// Bytes charged for a state of `len` positions: KV capacity rounded up
+    /// as the allocator rounds it (a power of two, at least 128, at most the
+    /// model's context), the convolution state, and [`STATE_SLACK_BYTES`].
+    /// `tests/state_bytes_real.rs` holds it against the device's account: a
+    /// held state measured 0.88-0.99 of this bound.
     pub fn bytes(&self, len: usize) -> usize {
         let capacity = len
             .max(128)
             .checked_next_power_of_two()
             .unwrap_or(self.context)
             .min(self.context);
-        self.kv_bytes_per_token * capacity + self.conv_bytes
+        self.kv_bytes_per_token * capacity + self.conv_bytes + STATE_SLACK_BYTES
     }
 }
 impl Checkpoint {
@@ -1080,7 +1092,8 @@ impl Checkpoint {
     }
 }
 
-/// How many described states each spec keeps ([`DescribedCache`]).
+/// How many described states each spec keeps (a count cap inside
+/// [`StateCache`]'s byte budget; the menu advertises it).
 pub const DESCRIBED_CACHE_CAPACITY: usize = 16;
 
 /// The prompt plus its generated description, standing at a question's slot:
@@ -1089,7 +1102,7 @@ pub const DESCRIBED_CACHE_CAPACITY: usize = 16;
 /// and the model state after it are reusable computation — never a cached
 /// answer; the options are always scored fresh. Keyed by the exact prompt
 /// token ids and the question field (a different field stops at a different
-/// slot). Least recently used goes first.
+/// slot).
 struct DescribedEntry {
     prompt_ids: Vec<u32>,
     field: String,
@@ -1098,65 +1111,162 @@ struct DescribedEntry {
     state: ModelState,
     logits: Tensor,
 }
-struct DescribedCache {
-    capacity: usize,
-    entries: std::collections::VecDeque<DescribedEntry>,
+
+/// A chat checkpoint plus a spec's read-turn head
+/// (`<|im_start|>user\n{spec block}\n\n`), forwarded as that one segment: the
+/// state a tail read of that spec on that checkpoint continues from. Made by
+/// the first such read, or ahead of it by the background prefill.
+struct TailPrefix {
+    /// Checkpoint ids plus head ids: the read checks it lands on its split.
+    len: usize,
+    state: ModelState,
 }
-impl DescribedCache {
-    fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            entries: std::collections::VecDeque::with_capacity(capacity),
-        }
+
+enum Cached {
+    Ready(PreparedPrompt),
+    Described(DescribedEntry),
+    TailPrefix(TailPrefix),
+}
+
+/// Every derived state the adjudicator caches, under one byte budget
+/// (`--state-cache-budget-mib`, `crate::state_store`): each spec's ready
+/// prompt (at most 1 per spec, as `input_cache_capacity` advertises), its
+/// described states (at most [`DESCRIBED_CACHE_CAPACITY`] per spec, as the
+/// menu advertises) and tail prefixes. Keys carry the spec's id, so a
+/// deleted or evicted spec's entries go with it. Entries are charged the
+/// [`StateSize`] upper bound plus their logits, ids and text.
+pub(crate) struct StateCache {
+    store: crate::state_store::StateStore<Cached>,
+    size: StateSize,
+}
+impl StateCache {
+    fn new(budget: usize, size: StateSize) -> Self {
+        Self { store: crate::state_store::StateStore::new(budget), size }
     }
-    /// A hit is moved to the back (most recent) and its parts cloned:
-    /// `State::clone` shares the immutable prefix buffers.
-    fn get(&mut self, prompt_ids: &[u32], field: &str) -> Option<(Vec<u32>, String, ModelState, Tensor)> {
-        let at = self
-            .entries
-            .iter()
-            .position(|e| e.field == field && e.prompt_ids == prompt_ids)?;
-        let entry = self.entries.remove(at).expect("position came from this deque");
-        let out = (
-            entry.generated.clone(),
-            entry.text.clone(),
-            entry.state.clone(),
-            entry.logits.clone(),
+    /// The most one entry can cost at `context` tokens: a described state
+    /// at the full context, with its logits, ids and text.
+    fn largest_entry(size: &StateSize, context: usize, max_token_bytes: usize) -> usize {
+        size.bytes(context) + size.logits_bytes + context * (std::mem::size_of::<u32>() + max_token_bytes)
+    }
+    fn hold(&mut self, id: String, group: Option<(&str, usize)>, bytes: usize, value: Cached) -> Result<(), Failure> {
+        let evicted = self.store.insert_in(id, group, bytes, Arc::new(value)).map_err(Failure::Internal)?;
+        if !evicted.is_empty() {
+            tracing::debug!(
+                evicted = evicted.len(),
+                held = self.store.len(),
+                used_bytes = self.store.used(),
+                budget_bytes = self.store.budget(),
+                "state cache evicted"
+            );
+        }
+        Ok(())
+    }
+    fn ready(&mut self, spec: &str, full: &[u32]) -> Option<PreparedEvaluation> {
+        let held = self.store.get(&format!("ready:{spec}:{}", crate::chat_session::checkpoint_id(full)))?;
+        let Cached::Ready(ready) = &*held else {
+            unreachable!("ready: keys hold ready prompts")
+        };
+        assert!(ready.token_ids == full, "a ready key's ids differ from its prompt: a sha256 collision");
+        Some(PreparedEvaluation {
+            state: ready.state.clone(),
+            logits: ready.logits.clone(),
+            cached_tokens: full.len(),
+        })
+    }
+    /// Replaces the spec's one ready prompt with a COMPLETE prefill of
+    /// `full`.
+    fn put_ready(&mut self, spec: &str, full: &[u32], state: &ModelState, logits: &Tensor) -> Result<(), Failure> {
+        let bytes = self.size.bytes(full.len()) + self.size.logits_bytes + full.len() * std::mem::size_of::<u32>();
+        self.hold(
+            format!("ready:{spec}:{}", crate::chat_session::checkpoint_id(full)),
+            Some((&format!("ready:{spec}"), 1)),
+            bytes,
+            Cached::Ready(PreparedPrompt { token_ids: full.to_vec(), state: state.clone(), logits: logits.clone() }),
+        )
+    }
+    fn described_key(spec: &str, prompt_ids: &[u32], field: &str) -> String {
+        format!("described:{spec}:{}:{field}", crate::chat_session::checkpoint_id(prompt_ids))
+    }
+    /// A hit is touched and its parts cloned: `State::clone` shares the
+    /// immutable prefix buffers.
+    fn described(&mut self, spec: &str, prompt_ids: &[u32], field: &str) -> Option<(Vec<u32>, String, ModelState, Tensor)> {
+        let held = self.store.get(&Self::described_key(spec, prompt_ids, field))?;
+        let Cached::Described(entry) = &*held else {
+            unreachable!("described: keys hold described states")
+        };
+        assert!(
+            entry.prompt_ids == prompt_ids && entry.field == field,
+            "a described key's prompt differs from its entry: a sha256 collision"
         );
-        self.entries.push_back(entry);
-        Some(out)
+        Some((entry.generated.clone(), entry.text.clone(), entry.state.clone(), entry.logits.clone()))
     }
     /// The deepest description held for these prompt bytes, whatever field
     /// it stopped at: the most of the report that a generation can resume
-    /// from. Moved to the back like a hit.
-    fn get_deepest(&mut self, prompt_ids: &[u32]) -> Option<(Vec<u32>, String, ModelState, Tensor)> {
+    /// from. Touched like a hit.
+    fn deepest(&mut self, spec: &str, prompt_ids: &[u32]) -> Option<(Vec<u32>, String, ModelState, Tensor)> {
+        let prefix = format!("described:{spec}:{}:", crate::chat_session::checkpoint_id(prompt_ids));
         let field = self
-            .entries
+            .store
             .iter()
-            .filter(|e| e.prompt_ids == prompt_ids)
+            .filter(|(id, _)| id.starts_with(&prefix))
+            .filter_map(|(_, v)| match &**v {
+                Cached::Described(e) => Some(e),
+                _ => None,
+            })
             .max_by_key(|e| e.generated.len())
             .map(|e| e.field.clone())?;
-        self.get(prompt_ids, &field)
+        self.described(spec, prompt_ids, &field)
     }
-    fn insert(&mut self, entry: DescribedEntry) {
-        if self.capacity == 0 {
-            return;
-        }
-        if let Some(at) = self
-            .entries
-            .iter()
-            .position(|e| e.field == entry.field && e.prompt_ids == entry.prompt_ids)
-        {
-            self.entries.remove(at);
-        }
-        while self.entries.len() >= self.capacity {
-            self.entries.pop_front();
-        }
-        self.entries.push_back(entry);
+    fn put_described(&mut self, spec: &str, entry: DescribedEntry) -> Result<(), Failure> {
+        let tokens = entry.prompt_ids.len() + entry.generated.len();
+        let bytes = self.size.bytes(tokens)
+            + self.size.logits_bytes
+            + tokens * std::mem::size_of::<u32>()
+            + entry.text.len();
+        self.hold(
+            Self::described_key(spec, &entry.prompt_ids, &entry.field),
+            Some((&format!("described:{spec}"), DESCRIBED_CACHE_CAPACITY)),
+            bytes,
+            Cached::Described(entry),
+        )
+    }
+    fn tail_key(spec: &str, checkpoint: &str) -> String {
+        format!("tail:{spec}:{checkpoint}")
+    }
+    /// The tail prefix of `spec` on `checkpoint`, touched, and its length.
+    fn tail(&mut self, spec: &str, checkpoint: &str) -> Option<(ModelState, usize)> {
+        let held = self.store.get(&Self::tail_key(spec, checkpoint))?;
+        let Cached::TailPrefix(prefix) = &*held else {
+            unreachable!("tail: keys hold tail prefixes")
+        };
+        Some((prefix.state.clone(), prefix.len))
+    }
+    fn has_tail(&self, spec: &str, checkpoint: &str) -> bool {
+        self.store.peek(&Self::tail_key(spec, checkpoint)).is_some()
+    }
+    fn put_tail(&mut self, spec: &str, checkpoint: &str, state: &ModelState, len: usize) -> Result<(), Failure> {
+        self.hold(
+            Self::tail_key(spec, checkpoint),
+            None,
+            self.size.bytes(len),
+            Cached::TailPrefix(TailPrefix { len, state: state.clone() }),
+        )
+    }
+    /// Drop every entry of a spec that is gone (deleted, evicted). The key's
+    /// second `:` field is the spec's id in every kind, which holds only
+    /// because ids are sha256 hex: keying by a spec's NAME (a file stem,
+    /// which may hold a `:`) would break this.
+    fn forget_spec(&mut self, spec: &str) -> usize {
+        self.store.retain(|id| id.split(':').nth(1) != Some(spec))
+    }
+    /// Drop the tail prefixes of a chat checkpoint that is gone.
+    fn forget_checkpoint(&mut self, checkpoint: &str) -> usize {
+        self.store
+            .retain(|id| !(id.starts_with("tail:") && id.rsplit(':').next() == Some(checkpoint)))
     }
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.entries.len()
+        self.store.len()
     }
 }
 
@@ -1208,7 +1318,6 @@ struct LoadedSpec {
     /// `prompt.output_schema` compiled against the tokenizer, once, at load.
     grammar: Option<std::sync::Arc<crate::constrain::Grammar>>,
     cache: PromptCache,
-    described: DescribedCache,
     info: PrefixInfo,
     menu: crate::opinion_api::SpecMenuEntry,
 }
@@ -1333,6 +1442,7 @@ impl LoadedSpec {
                 }
             }
         }
+        let spec_id = id.clone();
         Ok(Self {
             id,
             name,
@@ -1340,11 +1450,10 @@ impl LoadedSpec {
             prefix_text,
             grammar,
             cache: PromptCache {
+                spec: spec_id,
                 prefix,
                 prefix_ids,
-                ready: None,
             },
-            described: DescribedCache::new(DESCRIBED_CACHE_CAPACITY),
             info,
             menu,
         })
@@ -1797,6 +1906,12 @@ pub struct Adjudicator {
     /// Chat checkpoints (`POST /v1/chat`), which tail reads fork. See
     /// `crate::chat_session`.
     chats: crate::chat_session::CheckpointStore<crate::chat_session::ChatCheckpoint>,
+    /// Every cached derived state (ready prompts, described states, tail
+    /// prefixes) under one byte budget.
+    states: StateCache,
+    /// Tail prefixes to fill when the worker is idle: (checkpoint, spec id),
+    /// oldest first. See [`Generator::background`].
+    background: std::collections::VecDeque<(String, String)>,
     state_size: StateSize,
 }
 impl Adjudicator {
@@ -1884,6 +1999,20 @@ impl Adjudicator {
         // could evict its own first before the response names it.
         let full = state_size.bytes(cli.adjudicator_context)
             + cli.adjudicator_context * (std::mem::size_of::<u32>() + max_token_bytes(&tokenizer));
+        let state_budget = cli
+            .state_cache_budget_mib
+            .checked_mul(1 << 20)
+            .ok_or("--state-cache-budget-mib overflows")?;
+        let largest = StateCache::largest_entry(&state_size, cli.adjudicator_context, max_token_bytes(&tokenizer));
+        if state_budget < largest {
+            return Err(format!(
+                "--state-cache-budget-mib {} cannot hold one cached state at the full {}-token \
+                 context ({} MiB)",
+                cli.state_cache_budget_mib,
+                cli.adjudicator_context,
+                largest.div_ceil(1 << 20)
+            ));
+        }
         if budget < 2 * full {
             return Err(format!(
                 "--chat-checkpoint-budget-mib {} cannot hold a turn's two checkpoints at the full \
@@ -1906,6 +2035,8 @@ impl Adjudicator {
             context_limit: cli.adjudicator_context,
             specs: SpecStore::new(boot_specs, cli.opinion_spec_capacity),
             chats: crate::chat_session::CheckpointStore::new(budget),
+            states: StateCache::new(state_budget, state_size),
+            background: std::collections::VecDeque::new(),
             state_size,
         })
     }
@@ -2006,8 +2137,8 @@ impl Generator for Adjudicator {
         // request that wants every step's distribution, or a cold one, gets
         // the fresh path.
         let resumed = if request.use_cache && request.distributions.is_none() {
-            spec.described
-                .get_deepest(&full)
+            self.states
+                .deepest(&spec.id, &full)
                 .filter(|(generated, ..)| generated.len() < request.max_tokens)
         } else {
             None
@@ -2016,7 +2147,7 @@ impl Generator for Adjudicator {
         // values from here on, so the lookup's borrow of the spec ends.
         let resumed_or_lookup = match resumed {
             Some(resumed) => Ok(resumed),
-            None => Err(spec.cache.lookup(&self.model, &full, request.use_cache)?),
+            None => Err(spec.cache.lookup(&mut self.states, &self.model, &full, request.use_cache)?),
         };
         // What the rest of this job reads from the spec, cloned while it is
         // still borrowed: an opinion read served at a pause below resolves
@@ -2045,20 +2176,10 @@ impl Generator for Adjudicator {
                 if request.use_cache {
                     // Complete, synchronized and still wanted: only now does
                     // it reach the cache. Reads served at the pauses may
-                    // have replaced `ready` meanwhile; this replaces theirs,
-                    // as a later request would. The spec cannot have left
-                    // the store (only registration and deletion remove one,
-                    // and they never run at a pause), so its absence is a
-                    // bug, not a miss.
-                    self.specs
-                        .get_mut(&spec_id)
-                        .ok_or_else(|| {
-                            Failure::Internal(format!(
-                                "spec {spec_id} left the store while its generation was paused"
-                            ))
-                        })?
-                        .cache
-                        .publish(&full, &state, &logits);
+                    // have replaced the spec's ready prompt meanwhile; this
+                    // replaces theirs, as a later request would. Keyed by
+                    // the spec's id, so no borrow of the spec is needed.
+                    self.states.put_ready(&spec_id, &full, &state, &logits)?;
                 }
                 (state, logits, start, Vec::new(), None)
             }
@@ -2212,6 +2333,10 @@ impl Generator for Adjudicator {
             })
             .map(|(spec, newly_loaded, evicted)| (spec.menu.clone(), newly_loaded, evicted))
             .map_err(Failure::Unprocessable)?;
+        if let Some(gone) = &evicted {
+            self.states.forget_spec(gone);
+            self.background.retain(|(_, spec)| spec != gone);
+        }
         // No `check()` here. `register_or_load` above already committed the
         // mutation (inserted the spec, possibly evicted an LRU one) —
         // `self.specs` is the new truth regardless of what happens next.
@@ -2234,6 +2359,8 @@ impl Generator for Adjudicator {
     fn unregister(&mut self, id: &str) -> UnregisterOutcome {
         match self.specs.remove(id) {
             RemoveOutcome::Removed(spec) => {
+                self.states.forget_spec(&spec.id);
+                self.background.retain(|(_, queued)| *queued != spec.id);
                 let entry = spec.menu.clone();
                 UnregisterOutcome::Deleted { entry, menu: self.menu() }
             }
@@ -2260,6 +2387,45 @@ impl Generator for Adjudicator {
         request.validate().map_err(Failure::BadRequest)?;
         self.chat_turn(request, events, at)
     }
+
+    /// Background tail prefill: for each checkpoint a turn published, the
+    /// head of every spec its chat was tail-read with, forwarded once so a
+    /// later read of that spec starts after it. A read forwards the same
+    /// segment from the same state, so a read served from a background
+    /// prefix is the one it computes itself. Tasks whose checkpoint was
+    /// evicted, whose spec is gone, or whose prefix is already held are
+    /// dropped without work.
+    fn background(&mut self, at: &dyn YieldPoint<Self>) -> bool {
+        while let Some((checkpoint, spec)) = self.background.pop_front() {
+            match self.tail_prefill(&checkpoint, &spec, at) {
+                Ok(false) => continue,
+                Ok(true) => return true,
+                Err(failure) => {
+                    tracing::warn!(error = ?failure, "background tail prefill failed");
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// A spec's tail-read head: its system turn's content (the block: `system`,
+/// then the schema line) and `<|im_start|>user\n{block}\n\n`, the first of a
+/// tail read's two segments and what a tail prefix holds after the
+/// checkpoint.
+fn tail_head(spec: &LoadedSpec) -> Result<(&str, String), Failure> {
+    let block = spec
+        .prefix_text
+        .strip_prefix("<|startoftext|><|im_start|>system\n")
+        .and_then(|b| b.strip_suffix("<|im_end|>\n"))
+        .ok_or_else(|| Failure::Internal("a spec prefix is not one system turn".into()))?;
+    Ok((block, format!("<|im_start|>user\n{block}\n\n")))
+}
+
+/// The checkpoint a tail read names; only called on a tail read.
+fn checkpoint_id_of(request: &crate::opinion_api::OpinionRequest) -> &str {
+    &request.context.as_ref().expect("a tail read names a checkpoint").checkpoint
 }
 
 /// A checkpoint id naming nothing held: evicted, or never made here. Never a
@@ -2278,6 +2444,49 @@ impl Adjudicator {
         self.chats.peek(id).map(|c| c.ids.clone())
     }
 
+    /// How many background tail prefills are waiting, for tests and tools.
+    pub fn background_pending(&self) -> usize {
+        self.background.len()
+    }
+
+    /// One background task: `spec`'s tail prefix on `checkpoint`, unless
+    /// there is nothing to do (`Ok(false)`).
+    fn tail_prefill(&mut self, checkpoint: &str, spec: &str, at: &dyn YieldPoint<Self>) -> Result<bool, Failure> {
+        at.check()?;
+        if self.states.has_tail(spec, checkpoint) {
+            return Ok(false);
+        }
+        let Some(held) = self.chats.peek(checkpoint).cloned() else {
+            return Ok(false);
+        };
+        let Some(loaded) = self.specs.get_mut(spec) else {
+            return Ok(false);
+        };
+        if !loaded.prompt.tools.is_empty() || loaded.grammar.is_none() {
+            return Ok(false);
+        }
+        let head = tail_head(loaded)?.1;
+        let head_ids = encode_ids(&self.tokenizer, &head).map_err(Failure::Internal)?;
+        let len = held.ids.len() + head_ids.len();
+        if len + 2 >= self.context_limit {
+            return Ok(false);
+        }
+        let begin = Instant::now();
+        let model = self.model.clone();
+        let mut state = held.state.clone();
+        let logits = forward_segments(&model, &mut state, &[&head_ids], &mut || at.pause(self))?;
+        logits.device().synchronize()?;
+        at.check()?;
+        self.states.put_tail(spec, checkpoint, &state, len)?;
+        tracing::info!(
+            tokens = head_ids.len(),
+            prefill_ms = begin.elapsed().as_secs_f64() * 1000.,
+            pending = self.background.len(),
+            "tail prefix prefilled"
+        );
+        Ok(true)
+    }
+
     /// Hold a chat checkpoint, charged its upper-bound bytes.
     fn hold_checkpoint(
         &mut self,
@@ -2287,7 +2496,20 @@ impl Adjudicator {
         let bytes = self.state_size.bytes(checkpoint.ids.len())
             + checkpoint.ids.len() * std::mem::size_of::<u32>()
             + checkpoint.text.len();
-        let evicted = self.chats.insert(id, bytes, checkpoint).map_err(Failure::Internal)?;
+        let specs = checkpoint.read_specs.lock().expect("read_specs lock").clone();
+        let evicted = self.chats.insert(id.clone(), bytes, checkpoint).map_err(Failure::Internal)?;
+        // What an evicted checkpoint leaves: its tail prefixes (unreachable
+        // now: a read of it is a 404 first) and its queued prefills.
+        for gone in &evicted {
+            self.states.forget_checkpoint(gone);
+        }
+        self.background.retain(|(checkpoint, _)| !evicted.contains(checkpoint));
+        for spec in specs {
+            let task = (id.clone(), spec);
+            if !self.background.contains(&task) {
+                self.background.push_back(task);
+            }
+        }
         if !evicted.is_empty() {
             tracing::info!(
                 evicted = evicted.len(),
@@ -2372,6 +2594,10 @@ impl Adjudicator {
                     Some(b) => (b.state.clone(), b.ids.len()),
                     None => (self.model.new_state(), 0),
                 };
+                let inherited = base
+                    .as_ref()
+                    .map(|b| b.read_specs.lock().expect("read_specs lock").clone())
+                    .unwrap_or_default();
                 let refs: Vec<&[u32]> = segments.iter().map(Vec::as_slice).collect();
                 let logits = forward_segments(&model, &mut state, &refs, &mut || at.pause(self))?;
                 logits.device().synchronize()?;
@@ -2381,6 +2607,7 @@ impl Adjudicator {
                     ids: ids.clone(),
                     text: text.clone(),
                     state,
+                    read_specs: std::sync::Mutex::new(inherited),
                 });
                 // Complete: readers may fork it from here on, while the
                 // assistant's turn is still being generated.
@@ -2468,6 +2695,9 @@ impl Adjudicator {
                         crate::chat::AFTER_EOS
                     ),
                     state,
+                    // Everything read on this turn's user checkpoint, while
+                    // the turn was generated, included.
+                    read_specs: std::sync::Mutex::new(user.read_specs.lock().expect("read_specs lock").clone()),
                 }),
             )?;
             checkpoint = Some(id);
@@ -2536,7 +2766,7 @@ impl Adjudicator {
             cached_tokens,
         } = spec_slot
             .cache
-            .prepare(&self.model, &shared_ids, request.use_cache, check)?;
+            .prepare(&mut self.states, &self.model, &shared_ids, request.use_cache, check)?;
         let prefill_ms = begin.elapsed().as_secs_f64() * 1000.;
         let score = Instant::now();
         let candle_check = || check().map_err(|_| candle_core::Error::Msg("cancelled".into()));
@@ -2656,21 +2886,17 @@ impl Adjudicator {
                 (text.clone(), ids, text, None)
             }
             Some(held) => {
-                let block = spec
-                    .prefix_text
-                    .strip_prefix("<|startoftext|><|im_start|>system\n")
-                    .and_then(|b| b.strip_suffix("<|im_end|>\n"))
-                    .ok_or_else(|| Failure::Internal("a spec prefix is not one system turn".into()))?;
+                let (block, head) = tail_head(spec)?;
                 // The read turn: the spec's instructions and schema, then the
                 // state, as ONE user turn, then the closed reasoning region.
-                let head = format!("<|im_start|>user\n{block}\n\n");
                 let turn = spec.prompt.render_user_turn(&format!("{block}\n\n{state_text}"));
                 debug_assert!(turn.starts_with(&head));
                 let head_ids = encode_ids(&self.tokenizer, &head).map_err(Failure::Internal)?;
                 let turn_ids = encode_ids(&self.tokenizer, &turn).map_err(Failure::Internal)?;
                 // Two canonical segments, the head (the spec's, whatever the
-                // state) and the rest, so a prefill of checkpoint + head
-                // (planned background prefill) is the same computation.
+                // state) and the rest, so a tail prefix (checkpoint + head,
+                // made by an earlier read or the background prefill) is the
+                // same computation as forwarding the head here.
                 // The split needs the head's own tokens in place: a state
                 // that starts with a newline merges into the blank line.
                 if !turn_ids.starts_with(&head_ids) {
@@ -2697,6 +2923,7 @@ impl Adjudicator {
             prefix: match (&tail, request.use_cache) {
                 (_, false) => "bypass",
                 (None, true) => "hit",
+                // Refined to "tail" below when a tail prefix is held.
                 (Some(_), true) => "checkpoint",
             }
             .into(),
@@ -2708,7 +2935,7 @@ impl Adjudicator {
         let described_hit: Option<Vec<_>> = if request.use_cache {
             questions
                 .iter()
-                .map(|q| spec.described.get(&prompt_ids, &q.field))
+                .map(|q| self.states.described(&spec.id, &prompt_ids, &q.field))
                 .collect()
         } else {
             cache.described = "bypass".into();
@@ -2731,21 +2958,46 @@ impl Adjudicator {
                 } = match (&tail, tail_segments) {
                     (None, _) => spec
                         .cache
-                        .prepare(&self.model, &prompt_ids, request.use_cache, check)?,
+                        .prepare(&mut self.states, &self.model, &prompt_ids, request.use_cache, check)?,
                     // Resumed: the checkpoint's state, then the read turn's
                     // two segments. Nothing is published: the read turn is
                     // this request's alone.
                     (Some(held), Some((at, split))) if request.use_cache => {
-                        let mut state = held.state.clone();
-                        let logits = forward_segments(
-                            &self.model,
-                            &mut state,
-                            &[&prompt_ids[at..split], &prompt_ids[split..]],
-                            &mut || check(),
-                        )?;
+                        let checkpoint = checkpoint_id_of(request);
+                        let (mut state, cached_tokens) = match self.states.tail(&spec.id, checkpoint) {
+                            Some((state, len)) => {
+                                if len != split {
+                                    return Err(Failure::Internal(format!(
+                                        "tail prefix of {checkpoint} holds {len} tokens; the read splits at {split}"
+                                    )));
+                                }
+                                cache.prefix = "tail".into();
+                                (state, split)
+                            }
+                            None => {
+                                let mut state = held.state.clone();
+                                let logits = forward_segments(
+                                    &self.model,
+                                    &mut state,
+                                    &[&prompt_ids[at..split]],
+                                    &mut || check(),
+                                )?;
+                                logits.device().synchronize()?;
+                                check()?;
+                                self.states.put_tail(&spec.id, checkpoint, &state, split)?;
+                                (state, at)
+                            }
+                        };
+                        let logits =
+                            forward_segments(&self.model, &mut state, &[&prompt_ids[split..]], &mut || check())?;
                         logits.device().synchronize()?;
                         check()?;
-                        PreparedEvaluation { state, logits, cached_tokens: at }
+                        // This chat is read with this spec: its later
+                        // checkpoints get the head prefilled in the
+                        // background. Marked once the read's prefill is
+                        // done, not on a read that failed.
+                        held.read_specs.lock().expect("read_specs lock").insert(spec.id.clone());
+                        PreparedEvaluation { state, logits, cached_tokens }
                     }
                     // Cold, as asked: the same bytes from token 0 in plain
                     // chunks. The instrument for how far a resumed read sits
@@ -2798,14 +3050,17 @@ impl Adjudicator {
                         // on from the same logits to the next question's.
                         let question = &questions[slots.len()];
                         if request.use_cache {
-                            spec.described.insert(DescribedEntry {
-                                prompt_ids: prompt_ids.clone(),
-                                field: question.field.clone(),
-                                generated: generated.clone(),
-                                text: text.clone(),
-                                state: state.clone(),
-                                logits: logits.clone(),
-                            });
+                            self.states.put_described(
+                                &spec.id,
+                                DescribedEntry {
+                                    prompt_ids: prompt_ids.clone(),
+                                    field: question.field.clone(),
+                                    generated: generated.clone(),
+                                    text: text.clone(),
+                                    state: state.clone(),
+                                    logits: logits.clone(),
+                                },
+                            )?;
                         }
                         slots.push((generated.clone(), text.clone(), state.clone(), logits.clone()));
                         match questions.get(slots.len()) {
@@ -3515,29 +3770,34 @@ const SPEC_ADMIN_TIMEOUT_MS: u64 = 60_000;
 /// over any shipped spec, not a tuned limit.
 const MAX_SPEC_BYTES: usize = 1_048_576;
 
-/// A job's scheduling class. Each class has its own bounded queue
+/// A job's scheduling class. Each queued class has its own bounded queue
 /// ([`QUEUE_DEPTH`] deep). The worker picks the highest class with work
-/// waiting, and at a running job's [`YieldPoint::pause`] it serves every
-/// pending job of a strictly HIGHER class to completion before the paused
-/// job goes on. Within a class, jobs keep their arrival order and never
-/// overtake one another.
+/// waiting, and only when every queue is empty runs the generator's own
+/// background work ([`Priority::Background`]). At a running job's
+/// [`YieldPoint::pause`] it serves pending `Interactive` jobs, and only
+/// those, to completion before the paused job goes on. Within a class, jobs
+/// keep their arrival order and never overtake one another.
+///
+/// Only `Interactive` is ever served at a pause, whatever class is paused,
+/// because it is the one class that never removes anything a paused job
+/// relies on: registration and deletion (which remove specs, and with them
+/// the cache entries a paused job publishes beside) wait in `Generative`,
+/// behind a paused generation or background task, never inside it.
 ///
 /// A higher class goes first without limit: a steady stream of reads
 /// postpones a waiting generation until the stream stops or the
 /// generation's own deadline passes. Reads are short, and that is the
 /// point of the order; aging is the lever if it ever starves generation.
 ///
-/// Adding a class is adding a variant here, a place in [`Priority::ALL`],
-/// and a `Job::priority` arm; the queues, the pick and the pause all follow
-/// from `ALL`. Background prefill (a class below `Generative`, pausing like
-/// a generation does) is the one planned (`docs/chat-tail-plan.md`, piece
-/// 6). It must keep one invariant this order gives today for free: nothing
-/// served at a pause removes a spec. Its pauses would serve `Generative`,
-/// which holds registration and deletion, so either those move to a class
-/// that is never served at a pause, or background prefill re-resolves its
-/// spec after its pauses and treats a vanished spec as nothing to publish.
+/// Adding a queued class is adding a variant here, a place in
+/// [`Priority::ALL`], and a `Job::priority` arm; the queues and the pick
+/// follow from `ALL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Priority {
+    /// The generator's own work, queued inside it rather than here
+    /// ([`Generator::background`]: tail prefill), run only when every queue
+    /// is empty. It pauses like a generation, and reads overtake it.
+    Background,
     /// Generative adjudication, and spec registration and deletion. The
     /// admin jobs sit here, not higher, because they remove specs: served at
     /// a pause, a deletion or an eviction would pull a spec out from under
@@ -3550,7 +3810,8 @@ enum Priority {
     Interactive,
 }
 impl Priority {
-    /// Every class, lowest first. A class's position is its queue's index.
+    /// Every queued class, lowest first. A class's position is its queue's
+    /// index; `Background` has no queue.
     const ALL: [Priority; 2] = [Priority::Generative, Priority::Interactive];
     fn index(self) -> usize {
         Priority::ALL
@@ -3662,7 +3923,12 @@ impl Worker {
             if !open.contains(&true) {
                 return;
             }
-            // Nothing waiting: sleep until some open queue has work or
+            // Nothing queued: the generator's own background work, one task
+            // at a time, pausing for reads; then pick again.
+            if self.background(generator) {
+                continue;
+            }
+            // Nothing at all: sleep until some open queue has work or
             // closes, then pick again by class.
             let mut select = crossbeam_channel::Select::new();
             for (queue, _) in self.queues.iter().zip(&open).filter(|(_, open)| **open) {
@@ -3671,14 +3937,38 @@ impl Worker {
             select.ready();
         }
     }
-    /// The next waiting job of a class strictly above `floor`, highest
-    /// first, without blocking.
-    fn next_above(&self, floor: Priority) -> Option<Work> {
-        Priority::ALL
-            .iter()
-            .rev()
-            .take_while(|class| **class > floor)
-            .find_map(|class| self.queues[class.index()].try_recv().ok())
+    /// The next job to serve at a pause of a `paused`-class job, without
+    /// blocking: a waiting `Interactive` job, if `Interactive` is above
+    /// `paused` (see [`Priority`] for why only `Interactive`).
+    fn next_at_pause(&self, paused: Priority) -> Option<Work> {
+        (paused < Priority::Interactive)
+            .then(|| self.queues[Priority::Interactive.index()].try_recv().ok())
+            .flatten()
+    }
+    /// One background task of the generator's, if it has one. No caller
+    /// waits on it, so its check is the daemon stopping; its duration is
+    /// recorded like a job's.
+    fn background<G: Generator>(&self, generator: &mut G) -> bool {
+        let check = || {
+            if self.stopping.load(Ordering::SeqCst) {
+                Err(Failure::Cancelled)
+            } else {
+                Ok(())
+            }
+        };
+        let pause = Pause {
+            worker: self,
+            class: Priority::Background,
+            check: &check,
+            served: std::cell::Cell::new(0),
+            paused: std::cell::Cell::new(Duration::ZERO),
+        };
+        let start = Instant::now();
+        let ran = generator.background(&pause);
+        if ran {
+            crate::telemetry::record_inference_duration("background", start.elapsed() - pause.paused.get());
+        }
+        ran
     }
     /// One job, start to finish (pauses included), and its reply.
     fn run<G: Generator>(&self, generator: &mut G, work: Work) {
@@ -3888,7 +4178,7 @@ impl<G: Generator> YieldPoint<G> for Pause<'_> {
             if let Err(e) = (self.check)() {
                 break Err(e);
             }
-            let Some(work) = self.worker.next_above(self.class) else {
+            let Some(work) = self.worker.next_at_pause(self.class) else {
                 break Ok(());
             };
             self.worker.run(generator, work);
@@ -4604,19 +4894,24 @@ mod spec_store_tests {
 mod prompt_cache_tests {
     use super::*;
     use std::cell::Cell;
-    fn fixture() -> (Model, PromptCache) {
+    fn tiny() -> (Model, StateSize) {
         let mut f = std::io::Cursor::new(include_bytes!("../tests/fixtures/lfm2-moe/tiny.gguf"));
         let ct = candle_core::quantized::gguf_file::Content::read(&mut f).unwrap();
-        let model = Model::from_gguf(ct, &mut f, &candle_core::Device::Cpu).unwrap();
+        let size = StateSize::from_gguf(&ct).unwrap();
+        (Model::from_gguf(ct, &mut f, &candle_core::Device::Cpu).unwrap(), size)
+    }
+    fn fixture() -> (Model, PromptCache, StateCache) {
+        let (model, size) = tiny();
         let mut prefix = model.new_state();
         model.forward(&[1, 2, 3], &mut prefix).unwrap();
         (
             model,
             PromptCache {
+                spec: "spec".into(),
                 prefix,
                 prefix_ids: vec![1, 2, 3],
-                ready: None,
             },
+            StateCache::new(1 << 30, size),
         )
     }
     fn values(t: &Tensor) -> Vec<f32> {
@@ -4624,14 +4919,14 @@ mod prompt_cache_tests {
     }
     #[test]
     fn prepared_prompt_keeps_logits_and_hybrid_state_isolated() {
-        let (model, mut cache) = fixture();
+        let (model, cache, mut states) = fixture();
         let tokens = [1, 2, 3, 4, 5];
-        let mut first = cache.prepare(&model, &tokens, true, &|| Ok(())).unwrap();
+        let mut first = cache.prepare(&mut states, &model, &tokens, true, &|| Ok(())).unwrap();
         assert_eq!(first.cached_tokens, 3);
         let expected = values(&first.logits);
         let expected_next = values(&model.forward(&[6], &mut first.state).unwrap());
         model.forward(&[7, 8], &mut first.state).unwrap();
-        let mut second = cache.prepare(&model, &tokens, true, &|| Ok(())).unwrap();
+        let mut second = cache.prepare(&mut states, &model, &tokens, true, &|| Ok(())).unwrap();
         assert_eq!(second.cached_tokens, tokens.len());
         assert_eq!(second.state.len(), tokens.len());
         assert_eq!(values(&second.logits), expected);
@@ -4651,29 +4946,25 @@ mod prompt_cache_tests {
     /// what they compute alone.
     #[test]
     fn reads_at_a_paused_prefill_neither_see_nor_disturb_it() {
-        let (model, mut cache) = fixture();
+        let (model, cache, mut states) = fixture();
         let ok = || Ok(());
         let a: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
         let reads: [&[u32]; 3] = [&[1, 2, 3, 10], &[1, 2, 3, 11, 12], &[1, 2, 3, 13]];
         // Alone: `a` forwarded in chunks of two from the resident prefix,
-        // and each read prepared on a cache of its own.
-        let fresh = |cache: &PromptCache| PromptCache {
-            prefix: cache.prefix.clone(),
-            prefix_ids: cache.prefix_ids.clone(),
-            ready: None,
-        };
-        let Lookup::Cold { mut state, start } = fresh(&cache).lookup(&model, &a, true).unwrap() else {
+        // and each read prepared on a state cache of its own.
+        let fresh = || StateCache::new(1 << 30, tiny().1);
+        let Lookup::Cold { mut state, start } = cache.lookup(&mut fresh(), &model, &a, true).unwrap() else {
             panic!("an empty cache has nothing ready")
         };
         let alone = forward_chunks(&model, &mut state, &a[start..], 2, &mut || Ok(())).unwrap();
         let alone_next = model.forward(&[14], &mut state).unwrap();
         let reads_alone: Vec<Vec<f32>> = reads
             .iter()
-            .map(|r| values(&fresh(&cache).prepare(&model, r, true, &ok).unwrap().logits))
+            .map(|r| values(&cache.prepare(&mut fresh(), &model, r, true, &ok).unwrap().logits))
             .collect();
 
         // Paused: the same prefill with a read at every pause.
-        let Lookup::Cold { mut state, start } = cache.lookup(&model, &a, true).unwrap() else {
+        let Lookup::Cold { mut state, start } = cache.lookup(&mut states, &model, &a, true).unwrap() else {
             panic!("nothing ready yet")
         };
         let served = std::cell::RefCell::new(Vec::new());
@@ -4682,9 +4973,10 @@ mod prompt_cache_tests {
             let n = pauses.get();
             pauses.set(n + 1);
             if let Some(r) = reads.get(n) {
-                served.borrow_mut().push(values(&cache.prepare(&model, r, true, &ok)?.logits));
+                served.borrow_mut().push(values(&cache.prepare(&mut states, &model, r, true, &ok)?.logits));
                 // Every pause sees the read's entry, never the paused job's.
-                assert_eq!(cache.ready.as_ref().map(|p| p.token_ids.as_slice()), Some(*r));
+                assert!(states.ready(&cache.spec, r).is_some());
+                assert!(states.ready(&cache.spec, &a).is_none());
             }
             Ok(())
         })
@@ -4692,65 +4984,65 @@ mod prompt_cache_tests {
         assert_eq!(pauses.get(), 3, "six suffix tokens, chunks of two");
         assert_eq!(values(&logits), values(&alone), "the paused prefill is the one it computes alone");
         assert_eq!(*served.borrow(), reads_alone, "and the reads are the ones they compute alone");
-        cache.publish(&a, &state, &logits);
-        let hit = cache.prepare(&model, &a, true, &ok).unwrap();
+        states.put_ready(&cache.spec, &a, &state, &logits).unwrap();
+        let hit = cache.prepare(&mut states, &model, &a, true, &ok).unwrap();
         assert_eq!(hit.cached_tokens, a.len(), "published once complete");
         assert_eq!(values(&hit.logits), values(&alone));
 
         // A ready entry cloned out before a read replaces it decodes on as
         // if nothing had happened: clones share no mutable state.
-        let Lookup::Ready(mut paused) = cache.lookup(&model, &a, true).unwrap() else {
+        let Lookup::Ready(mut paused) = cache.lookup(&mut states, &model, &a, true).unwrap() else {
             panic!("`a` is ready")
         };
-        cache.prepare(&model, reads[0], true, &ok).unwrap();
+        cache.prepare(&mut states, &model, reads[0], true, &ok).unwrap();
         let next = model.forward(&[14], &mut paused.state).unwrap();
         assert_eq!(values(&next), values(&alone_next));
     }
 
     #[test]
     fn ready_input_cannot_cross_model_instances() {
-        let (model, mut cache) = fixture();
-        let (other, _) = fixture();
+        let (model, cache, mut states) = fixture();
+        let (other, _, _) = fixture();
         cache
-            .prepare(&model, &[1, 2, 3, 4], true, &|| Ok(()))
+            .prepare(&mut states, &model, &[1, 2, 3, 4], true, &|| Ok(()))
             .unwrap();
         assert!(
             cache
-                .prepare(&other, &[1, 2, 3, 4], true, &|| Ok(()))
+                .prepare(&mut states, &other, &[1, 2, 3, 4], true, &|| Ok(()))
                 .is_err()
         );
     }
 
     #[test]
     fn cache_is_exact_bounded_and_cold_requests_bypass_it() {
-        let (model, mut cache) = fixture();
+        let (model, cache, mut states) = fixture();
         let a = [1, 2, 3, 4];
         let b = [1, 2, 3, 5];
-        cache.prepare(&model, &a, true, &|| Ok(())).unwrap();
+        cache.prepare(&mut states, &model, &a, true, &|| Ok(())).unwrap();
         assert_eq!(
             cache
-                .prepare(&model, &b, false, &|| Ok(()))
+                .prepare(&mut states, &model, &b, false, &|| Ok(()))
                 .unwrap()
                 .cached_tokens,
             0
         );
         assert_eq!(
             cache
-                .prepare(&model, &a, true, &|| Ok(()))
+                .prepare(&mut states, &model, &a, true, &|| Ok(()))
                 .unwrap()
                 .cached_tokens,
             a.len()
         );
         assert_eq!(
             cache
-                .prepare(&model, &b, true, &|| Ok(()))
+                .prepare(&mut states, &model, &b, true, &|| Ok(()))
                 .unwrap()
                 .cached_tokens,
             3
         );
         assert_eq!(
             cache
-                .prepare(&model, &a, true, &|| Ok(()))
+                .prepare(&mut states, &model, &a, true, &|| Ok(()))
                 .unwrap()
                 .cached_tokens,
             3
@@ -4767,7 +5059,7 @@ mod prompt_cache_tests {
         // `prepared_prompt_keeps_logits_and_hybrid_state_isolated` above),
         // and if it were NOT deterministic here, that would be a finding to
         // report, not paper over.
-        let (model, _cache) = fixture();
+        let (model, _, _) = fixture();
         let mut state_a = model.new_state();
         let raw_a = values(&model.forward(&[1, 2, 3, 4], &mut state_a).unwrap());
         let mut state_b = model.new_state();
@@ -4809,8 +5101,8 @@ mod prompt_cache_tests {
     }
 
     #[test]
-    fn described_cache_is_keyed_by_prompt_and_field_and_evicts_the_oldest() {
-        let (model, _) = fixture();
+    fn described_cache_is_keyed_by_prompt_and_field_and_capped_per_spec() {
+        let (model, _, mut states) = fixture();
         let entry = |prompt: &[u32], field: &str, generated: &[u32]| {
             let mut state = model.new_state();
             let logits = model.forward(prompt, &mut state).unwrap();
@@ -4823,29 +5115,76 @@ mod prompt_cache_tests {
                 logits,
             }
         };
-        let mut cache = DescribedCache::new(2);
-        cache.insert(entry(&[1, 2, 3], "verdict", &[4, 5]));
-        cache.insert(entry(&[1, 2, 3], "scope", &[4]));
+        states.put_described("s", entry(&[1, 2, 3], "verdict", &[4, 5])).unwrap();
+        states.put_described("s", entry(&[1, 2, 3], "scope", &[4])).unwrap();
         // Same prompt, different field: a different slot, so a different entry.
-        assert_eq!(cache.len(), 2);
-        let (generated, text, state, _) = cache.get(&[1, 2, 3], "verdict").unwrap();
+        assert_eq!(states.len(), 2);
+        let (generated, text, state, _) = states.described("s", &[1, 2, 3], "verdict").unwrap();
         assert_eq!(generated, [4, 5]);
         assert_eq!(text, "verdict:2");
         assert_eq!(state.len(), 3);
-        assert!(cache.get(&[1, 2, 3], "undo").is_none());
-        assert!(cache.get(&[1, 2, 4], "verdict").is_none());
-        // The hit above made `verdict` most recent, so a third entry evicts `scope`.
-        cache.insert(entry(&[9, 9, 9], "verdict", &[1]));
-        assert_eq!(cache.len(), 2);
-        assert!(cache.get(&[1, 2, 3], "scope").is_none());
-        assert!(cache.get(&[1, 2, 3], "verdict").is_some());
-        // Re-inserting a key replaces rather than duplicates.
-        cache.insert(entry(&[9, 9, 9], "verdict", &[1, 2, 3]));
-        assert_eq!(cache.len(), 2);
-        assert_eq!(cache.get(&[9, 9, 9], "verdict").unwrap().0, [1, 2, 3]);
-        let mut none = DescribedCache::new(0);
-        none.insert(entry(&[1], "verdict", &[2]));
-        assert_eq!(none.len(), 0);
+        assert!(states.described("s", &[1, 2, 3], "undo").is_none());
+        assert!(states.described("s", &[1, 2, 4], "verdict").is_none());
+        assert!(states.described("other", &[1, 2, 3], "verdict").is_none(), "keyed by spec too");
+        // The per-spec cap: 16 more entries for `s` push its oldest out,
+        // and another spec's entries do not count against it.
+        states.put_described("t", entry(&[7], "verdict", &[1])).unwrap();
+        for i in 0..DESCRIBED_CACHE_CAPACITY as u32 {
+            states.put_described("s", entry(&[9, i], "verdict", &[1])).unwrap();
+        }
+        assert!(states.described("s", &[1, 2, 3], "verdict").is_none());
+        assert!(states.described("t", &[7], "verdict").is_some());
+        assert_eq!(states.len(), DESCRIBED_CACHE_CAPACITY + 1);
+        assert_eq!(states.forget_spec("s"), DESCRIBED_CACHE_CAPACITY);
+        assert_eq!(states.len(), 1);
+        // Tail prefixes go with their spec, or with their checkpoint.
+        let mut state = model.new_state();
+        model.forward(&[1, 2], &mut state).unwrap();
+        states.put_tail("t", "cp1", &state, 2).unwrap();
+        states.put_tail("t", "cp2", &state, 2).unwrap();
+        states.put_tail("u", "cp1", &state, 2).unwrap();
+        assert_eq!(states.forget_checkpoint("cp1"), 2);
+        assert!(states.tail("t", "cp2").is_some() && states.tail("t", "cp1").is_none());
+        assert_eq!(states.forget_spec("t"), 2, "t's described state and its cp2 prefix");
+        assert_eq!(states.len(), 0);
+    }
+
+    /// Every cached state counts against one byte budget, whichever spec
+    /// and kind it is: a small budget holds fewer described states than the
+    /// per-spec cap allows, and a spec's ready prompt can push out another
+    /// spec's described state.
+    #[test]
+    fn the_state_cache_is_bounded_by_bytes_across_specs_and_kinds() {
+        let (model, size) = tiny();
+        let entry = |prompt: &[u32]| {
+            let mut state = model.new_state();
+            let logits = model.forward(prompt, &mut state).unwrap();
+            (state, logits)
+        };
+        let one = size.bytes(3) + size.logits_bytes + 3 * 4;
+        let mut states = StateCache::new(2 * one + one / 2, size);
+        for (i, prompt) in [[1u32, 2, 3], [1, 2, 4], [1, 2, 5]].iter().enumerate() {
+            let (state, logits) = entry(prompt);
+            states
+                .put_described(
+                    "s",
+                    DescribedEntry {
+                        prompt_ids: prompt.to_vec(),
+                        field: "f".into(),
+                        generated: vec![],
+                        text: String::new(),
+                        state,
+                        logits,
+                    },
+                )
+                .unwrap();
+            assert_eq!(states.len(), (i + 1).min(2), "two fit, not three");
+        }
+        let (state, logits) = entry(&[1, 2, 6]);
+        states.put_ready("other", &[1, 2, 6], &state, &logits).unwrap();
+        assert_eq!(states.len(), 2);
+        assert!(states.described("s", &[1, 2, 4], "f").is_none(), "the oldest went, across specs");
+        assert!(states.ready("other", &[1, 2, 6]).is_some());
     }
 
     /// The resume path rebuilds the sampler with `prompt + resumed` as
@@ -4893,7 +5232,7 @@ mod prompt_cache_tests {
 
     #[test]
     fn get_deepest_returns_the_longest_description_for_the_prompt() {
-        let (model, _) = fixture();
+        let (model, _, mut states) = fixture();
         let entry = |field: &str, generated: &[u32]| {
             let mut state = model.new_state();
             let logits = model.forward(&[1, 2, 3], &mut state).unwrap();
@@ -4906,12 +5245,12 @@ mod prompt_cache_tests {
                 logits,
             }
         };
-        let mut cache = DescribedCache::new(4);
-        cache.insert(entry("scope", &[4]));
-        cache.insert(entry("verdict", &[4, 5, 6]));
-        cache.insert(entry("undo", &[4, 5]));
-        assert_eq!(cache.get_deepest(&[1, 2, 3]).unwrap().0, [4, 5, 6]);
-        assert!(cache.get_deepest(&[1, 2, 4]).is_none());
+        states.put_described("s", entry("scope", &[4])).unwrap();
+        states.put_described("s", entry("verdict", &[4, 5, 6])).unwrap();
+        states.put_described("s", entry("undo", &[4, 5])).unwrap();
+        assert_eq!(states.deepest("s", &[1, 2, 3]).unwrap().0, [4, 5, 6]);
+        assert!(states.deepest("s", &[1, 2, 4]).is_none());
+        assert!(states.deepest("t", &[1, 2, 3]).is_none());
     }
 
     #[test]
@@ -4919,22 +5258,26 @@ mod prompt_cache_tests {
         // The cache hands back a clone of the state at the slot; scoring off it
         // must equal scoring off the state that produced it, and must not
         // advance what the cache holds.
-        let (model, _) = fixture();
+        let (model, _, mut states) = fixture();
         let mut state = model.new_state();
         model.forward(&[1, 2, 3], &mut state).unwrap();
         let logits = model.forward(&[4, 5], &mut state).unwrap();
         let direct = crate::opinion::score_continuations(&model, &state, &logits, &[vec![6, 7], vec![8]], &|| Ok(())).unwrap();
-        let mut cache = DescribedCache::new(1);
-        cache.insert(DescribedEntry {
-            prompt_ids: vec![1, 2, 3],
-            field: "verdict".into(),
-            generated: vec![4, 5],
-            text: String::new(),
-            state,
-            logits,
-        });
+        states
+            .put_described(
+                "s",
+                DescribedEntry {
+                    prompt_ids: vec![1, 2, 3],
+                    field: "verdict".into(),
+                    generated: vec![4, 5],
+                    text: String::new(),
+                    state,
+                    logits,
+                },
+            )
+            .unwrap();
         for _ in 0..2 {
-            let (_, _, hit_state, hit_logits) = cache.get(&[1, 2, 3], "verdict").unwrap();
+            let (_, _, hit_state, hit_logits) = states.described("s", &[1, 2, 3], "verdict").unwrap();
             let cached = crate::opinion::score_continuations(&model, &hit_state, &hit_logits, &[vec![6, 7], vec![8]], &|| Ok(())).unwrap();
             assert_eq!(direct, cached);
             assert_eq!(hit_state.len(), 5);
@@ -4974,17 +5317,17 @@ mod prompt_cache_tests {
 
     #[test]
     fn failed_or_cancelled_prefill_does_not_replace_ready_input() {
-        let (model, mut cache) = fixture();
+        let (model, cache, mut states) = fixture();
         let a = [1, 2, 3, 4];
-        cache.prepare(&model, &a, true, &|| Ok(())).unwrap();
+        cache.prepare(&mut states, &model, &a, true, &|| Ok(())).unwrap();
         assert!(
             cache
-                .prepare(&model, &[1, 2, 3, 16], true, &|| Ok(()))
+                .prepare(&mut states, &model, &[1, 2, 3, 16], true, &|| Ok(()))
                 .is_err()
         );
         assert!(
             cache
-                .prepare(&model, &[1, 2, 9, 4], true, &|| Ok(()))
+                .prepare(&mut states, &model, &[1, 2, 9, 4], true, &|| Ok(()))
                 .is_err()
         );
         let calls = Cell::new(0);
@@ -4997,18 +5340,18 @@ mod prompt_cache_tests {
             }
         };
         assert!(matches!(
-            cache.prepare(&model, &[1, 2, 3, 5], true, &check),
+            cache.prepare(&mut states, &model, &[1, 2, 3, 5], true, &check),
             Err(Failure::Cancelled)
         ));
         assert_eq!(
             cache
-                .prepare(&model, &a, true, &|| Ok(()))
+                .prepare(&mut states, &model, &a, true, &|| Ok(()))
                 .unwrap()
                 .cached_tokens,
             a.len()
         );
         assert!(matches!(
-            cache.prepare(&model, &a, true, &|| Err(Failure::Deadline)),
+            cache.prepare(&mut states, &model, &a, true, &|| Err(Failure::Deadline)),
             Err(Failure::Deadline)
         ));
     }
@@ -5018,15 +5361,19 @@ mod prompt_cache_tests {
 mod priority_tests {
     use super::*;
 
-    /// `ALL` is the class order the pick and the pause walk, and `Ord` is
-    /// what `next_above` compares: a class added out of place in either
-    /// would serve the wrong jobs at a pause.
+    /// `ALL` is every queued class, once, lowest first: the order the pick
+    /// walks. The match is exhaustive, so a new class fails to compile here
+    /// until it is placed; `Background` alone has no queue.
     #[test]
-    fn all_lists_every_class_once_lowest_first() {
-        let mut sorted = Priority::ALL.to_vec();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted, Priority::ALL);
+    fn all_lists_every_queued_class_once_lowest_first() {
+        let queued = |p: Priority| match p {
+            Priority::Background => false,
+            Priority::Generative | Priority::Interactive => true,
+        };
+        let every = [Priority::Background, Priority::Generative, Priority::Interactive];
+        let mut expected: Vec<_> = every.into_iter().filter(|p| queued(*p)).collect();
+        expected.sort();
+        assert_eq!(expected, Priority::ALL);
         for (i, class) in Priority::ALL.iter().enumerate() {
             assert_eq!(class.index(), i);
         }

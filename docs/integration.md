@@ -210,7 +210,9 @@ one do not carry to the other (invariant 8); and `use_cache: false` reads
 the same bytes cold, which is a different computation, not a reference
 (resumed and cold disagree by |Δ logprob| p50 0.21 nats, max 1.8, top
 option on 2 of 24 questions; numbers below). A repeated tail read from the
-same checkpoint is identical. The response echoes `context`, and
+same checkpoint is identical, and so is one that starts from a tail
+prefix the daemon filled in the background. The response echoes
+`context`, and
 `rendered_sha256` covers the whole chat. A spec with `tools` cannot read a
 tail (`400`), nor can a state that begins with a newline.
 
@@ -237,6 +239,10 @@ per spec, because prompt length and field count set the cost:
   miss, a cold one 2.09 s; two reads forked from a streaming turn's
   `checkpoint_user` answered 6/6 before the turn finished.
   `benchmarks/lfm25/results/2026-09-26-chat-tail.json`.
+- **Tail prefixes** (2026-09-26, same stack, six chats, n=12 per class):
+  a described-cache miss that starts after a background-filled tail
+  prefix took p50 653 ms, against 1274 ms forwarding the spec's head
+  itself. `benchmarks/lfm25/results/2026-09-26-tail-prefill.json`.
 - The encoder heads serve through ONE serial inference worker, so
   concurrent callers queue rather than parallelise; a caller that fans out
   backlogs everyone behind it.

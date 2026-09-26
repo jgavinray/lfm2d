@@ -75,6 +75,14 @@ pub struct Cli {
     /// context.
     #[arg(long = "chat-checkpoint-budget-mib", env = "LFM2D_CHAT_CHECKPOINT_BUDGET_MIB", default_value_t = 16384)]
     pub chat_checkpoint_budget_mib: usize,
+    /// Memory for every cached derived model state, in MiB: each spec's
+    /// ready prompt and described states (the per-spec counts the menu
+    /// advertises still apply inside it) and chat tail prefixes. Past it,
+    /// the least recently used goes, whichever spec it belongs to. Charged
+    /// the same upper bound as checkpoints. Must hold one described state
+    /// at the full adjudicator context.
+    #[arg(long = "state-cache-budget-mib", env = "LFM2D_STATE_CACHE_BUDGET_MIB", default_value_t = 16384)]
+    pub state_cache_budget_mib: usize,
 
     /// Directory holding an `Lfm2Embedding`-shaped checkpoint
     /// (`config.json`, `tokenizer.json`, `model.safetensors`). Backs
@@ -312,6 +320,7 @@ mod tests {
             opinion_specs: Vec::new(),
             opinion_spec_capacity: 8,
             chat_checkpoint_budget_mib: 16384,
+            state_cache_budget_mib: 16384,
             embedder_dir: None,
             router_dir: None,
             token_classifier_dir: Vec::new(),
@@ -360,6 +369,7 @@ mod tests {
             opinion_specs: Vec::new(),
             opinion_spec_capacity: 8,
             chat_checkpoint_budget_mib: 16384,
+            state_cache_budget_mib: 16384,
             embedder_dir: Some("/tmp/e".into()),
             router_dir: Some("/tmp/r".into()),
             token_classifier_dir: vec!["/tmp/t".into()],

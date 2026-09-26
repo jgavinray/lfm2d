@@ -214,8 +214,10 @@ fn chat_checkpoints_and_tail_reads_on_the_real_model() {
         let menu = a1.menu();
         let questions = menu.iter().find(|e| e.spec == SPEC).unwrap().resolve_all(&request.questions).unwrap();
         let r = a1.opine(&request, &questions, &|| Ok(())).unwrap();
-        assert_eq!(r.cache.prefix, "checkpoint", "a tail read never uses the spec's own prefix");
-        assert_eq!(r.cached_tokens, a1.chat_checkpoint_ids(&tail3).unwrap().len());
+        // Not the spec's own prefix: the tail prefix the first read of this
+        // checkpoint published (checkpoint + the spec's read-turn head).
+        assert_eq!(r.cache.prefix, "tail");
+        assert!(r.cached_tokens > a1.chat_checkpoint_ids(&tail3).unwrap().len());
     }
     let unknown = read(&mut a1, &read_request(Some(&"0".repeat(64)), EMAILS[0], true)).unwrap_err();
     assert!(matches!(unknown, Failure::NotFound(_)), "{unknown:?}");
@@ -264,6 +266,29 @@ fn chat_checkpoints_and_tail_reads_on_the_real_model() {
         };
         eprintln!("  read {i}: resumed {:?} cold {:?}", top(r), top(c));
     }
+
+    // 5b. Background tail prefill. This chat has been read with SPEC (step
+    //     5), so the next turn's assistant checkpoint inherits it and gets
+    //     SPEC's tail prefix filled in the background; a read there then
+    //     starts after the prefix.
+    let r4 = chat(&mut a1, &cont(&asst1_id, B, 1024));
+    assert_eq!(r4.finish_reason, "stop", "{:?}", r4.text);
+    let asst4 = r4.checkpoint.clone().unwrap();
+    assert!(a1.background_pending() >= 1, "the new checkpoint queued its tail prefill");
+    let ok = || Ok(());
+    let mut ran = 0;
+    while a1.background(&ok) {
+        ran += 1;
+    }
+    assert!(ran >= 1 && a1.background_pending() == 0);
+    let from_background = {
+        let request = read_request(Some(&asst4), EMAILS[0], true);
+        let menu = a1.menu();
+        let questions = menu.iter().find(|e| e.spec == SPEC).unwrap().resolve_all(&request.questions).unwrap();
+        let r = a1.opine(&request, &questions, &|| Ok(())).unwrap();
+        assert_eq!(r.cache.prefix, "tail", "the read started after the background prefix");
+        read(&mut a1, &request).unwrap()
+    };
     drop(a1);
 
     // 6. The canonical schedule: a fresh daemon STARTS a chat with A and B2
@@ -299,6 +324,18 @@ fn chat_checkpoints_and_tail_reads_on_the_real_model() {
     // turn from there is still the chain the first daemon built.
     let r2c = chat(&mut a2, &cont(r1c.checkpoint.as_ref().unwrap(), B, 1));
     assert_eq!(r2c.checkpoint_user, r2.checkpoint_user);
+
+    // 8. A read served from a background tail prefix is the read computed
+    //    directly: the same turn in this daemon, whose background work
+    //    never runs, and the same read, computed from the checkpoint.
+    let r4b = chat(&mut a2, &cont(&asst1_id, B, 1024));
+    assert_eq!(r4b.checkpoint.as_deref(), Some(asst4.as_str()));
+    let request = read_request(Some(&asst4), EMAILS[0], true);
+    let menu = a2.menu();
+    let questions = menu.iter().find(|e| e.spec == SPEC).unwrap().resolve_all(&request.questions).unwrap();
+    let direct = a2.opine(&request, &questions, &|| Ok(())).unwrap();
+    assert_eq!(direct.cache.prefix, "checkpoint", "computed from the checkpoint, no prefix held");
+    assert_eq!(read(&mut a2, &request).unwrap(), from_background, "background prefix == direct");
 }
 
 /// A budget that cannot hold a turn's two checkpoints at the full context

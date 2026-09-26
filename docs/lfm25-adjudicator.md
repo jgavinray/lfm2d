@@ -430,8 +430,9 @@ moved out (its fields are that spec's, not the daemon's):
   prompt checkpoint): the spec's resident prefix; the exact rendered
   prompt (one checkpoint per spec, exact repeat); and the *described*
   state — the prompt plus its generated description at a slot, kept per
-  spec in a small LRU (`described_cache_capacity` on the menu, 16). The
-  capacity counts ENTRIES, one per asked slot: a three-question request
+  spec in a small LRU (`described_cache_capacity` on the menu, 16, inside
+  the byte budget of "State memory"). The capacity counts ENTRIES, one per
+  asked slot: a three-question request
   spends three, so the LRU holds about five such commands. Greedy
   decoding under the grammar is a pure function of the rendered prompt on a
   fixed backend, so the description and the model state after it are
@@ -684,17 +685,85 @@ checked across two daemons in `chat_real.rs`.
 
 The store is in memory, bounded by `--chat-checkpoint-budget-mib`
 (default 16384), least recently used evicted first; startup refuses a
-budget that cannot hold a turn's two checkpoints at the full context. A checkpoint is
-charged an upper bound read off the GGUF: KV rounded up as the append
-allocator rounds it (a power of two, at least 128 positions) and the
-convolution state, plus its ids and text exactly. Checkpoints of one chat share KV
-buffers and each is charged in full, so the store holds at least what the
-budget says. Startup refuses a budget that cannot hold one checkpoint at
-the full context. Entries carry a kind; chats and reads start only from a
-chat-turn checkpoint, which leaves room for the planned background
-prefill (piece 6) to hold "checkpoint + spec block" prefixes in the same
-store and budget. A read or a turn holds its checkpoint by reference, so an
-eviction meanwhile does not disturb it. Nothing survives a restart.
+budget that cannot hold a turn's two checkpoints at the full context. A
+checkpoint is charged the state bound ("State memory" below) plus its ids
+and text exactly. Checkpoints of one chat share KV buffers and each is
+charged in full, so the store holds at least what the budget says. Chats
+and reads start only from a chat-turn checkpoint. A read or a turn holds
+its checkpoint by reference, so an eviction meanwhile does not disturb
+it. Nothing survives a restart.
+
+### State memory
+
+Everything the adjudicator keeps that holds a model state is bounded by
+bytes (`lfm2d/src/state_store.rs`), least recently used first, never an
+entry larger than its whole budget:
+
+- chat checkpoints, `--chat-checkpoint-budget-mib` (above);
+- every cached derived state, `--state-cache-budget-mib` (default
+  16384): each spec's ready prompt and described states, and tail
+  prefixes. The per-spec counts the API advertises (`input_cache_capacity:
+  1`, `described_cache_capacity: 16`) still apply inside it, and a deleted
+  or evicted spec's entries go with it. Startup refuses a budget that
+  cannot hold one described state at the full context. The two budgets
+  are apart so a burst of reads cannot evict a chat's user-facing ids.
+
+The resident spec prefixes stay outside both, bounded by the spec count
+(boot specs plus `--opinion-spec-capacity` uploads, one state each).
+
+Counts alone never bounded this memory: a long state forks to a
+power-of-two KV capacity, so at a 32k context 16 described states plus a
+ready prompt across 8 specs could reach ~100 GiB. A state is charged KV at
+that capacity (a power of two, at least 128 positions, at most the model's
+own context), the convolution state, and 1 MiB of slack. The slack is
+measured, not assumed: `lfm2d/tests/state_bytes_real.rs` reads the
+device's per-process account (`/sys/class/kfd/kfd/proc/<pid>/vram_*`), one
+process per case because the ROCm allocator hands a parked block of the
+same size back and hides the next state's cost, and divides the cost of 4
+more held states by 4. On gfx1151, 2026-09-26, two identical runs:
+
+| shape | tokens | measured | bound | measured / bound |
+|---|---|---|---|---|
+| prefilled | 200 | 6.50 MiB | 7.42 MiB | 0.88 |
+| forked (+8 decoded) | 208 | 6.50 MiB | 7.42 MiB | 0.88 |
+| prefilled | 1000 | 24.50 MiB | 25.42 MiB | 0.96 |
+| forked | 1008 | 25.00 MiB | 25.42 MiB | 0.98 |
+| prefilled | 2000 | 48.50 MiB | 49.42 MiB | 0.98 |
+| forked | 2008 | 48.50 MiB | 49.42 MiB | 0.98 |
+| prefilled | 3000 | 96.00 MiB | 97.42 MiB | 0.99 |
+| forked | 3008 | 96.50 MiB | 97.42 MiB | 0.99 |
+
+KV plus conv alone came in 80 KiB low on most shapes (592 KiB once); the
+slack covers that. What the budget does not see: blocks the allocator
+parks after an eviction stay mapped until a same-size allocation reuses
+them, so the process can hold more than the budget after the held set has
+moved between sizes. The candle pin bump that replaces the per-size pool
+is where that closes.
+
+### Tail prefixes and background prefill
+
+A tail read forwards its first segment (the checkpoint's state plus the
+spec's read-turn head) into a **tail prefix** in the state cache, and a
+later tail read of that spec on that checkpoint starts after it
+(`cache.prefix: "tail"`): the same segment from the same state, so the
+same numbers.
+
+A chat checkpoint remembers the specs its chat has been tail-read with,
+inherited down the chain (a turn's assistant checkpoint also takes the
+specs read on its user checkpoint while it generated). Holding a new
+checkpoint queues those specs' tail prefixes, and the worker fills them
+when every queue is empty, one at a time, pausing for reads like a
+generation; registration and deletion wait for a running one rather than
+running at its pauses. A read served from a background prefix is
+bit-identical to the same read computed from the checkpoint
+(`chat_real.rs`, across two daemons). Measured 2026-09-26
+(`benchmarks/lfm25/tail_prefill.py`, `email-triage-v2`, six chats, n=12
+per class): a described-cache miss from a prefix took p50 **653 ms** wall
+and 127 ms of prefill, where forwarding the 304-token head itself took
+1274 ms and 710 ms, though the prefix reads' prompts were longer (p50 1215
+vs 560 tokens). Filling one prefix took 530–590 ms of idle worker time.
+Reads during a turn's generation never find a background prefix for that
+turn's user checkpoint: background work runs only between jobs.
 
 ### Tail reads: `/v1/opinion` with `context`
 
@@ -718,7 +787,9 @@ prefill of checkpoint + block (piece 6) is the same computation; a state
 that begins with a newline would merge into that blank line and is a
 `400`. A spec with `tools` is a `400`: its read turn was never measured.
 The response echoes `context` and reports `cache.prefix: "checkpoint"`
-(the spec's own prefix is never used); `rendered_sha256` covers the whole chat, and
+(forwarded from the checkpoint) or `"tail"` (started after a held tail
+prefix, below); the spec's own prefix is never used. `rendered_sha256`
+covers the whole chat, and
 `rendered`/`rendered_token_ids` carry it when asked. The described cache
 works unchanged, keyed by the full prompt ids. An unknown checkpoint is a
 `404`.
@@ -1091,8 +1162,9 @@ Foreign-model state, bad tokens, and context overflow are errors.
 The [KV allocator](lfm25-kv-cache.md) amortizes prefix copying over a linear
 continuation. Branches copy their prefix when their desired tail is occupied.
 Attention still materializes repeated KV heads; paged attention is not present.
-The daemon owns one fixed prefix and one complete-input checkpoint with
-saved logits, and one worker thread with two bounded queues of eight: opinion
+The daemon owns one fixed prefix per spec and one complete-input checkpoint
+with saved logits per spec (in the byte-bounded state cache, "State
+memory"), and one worker thread with two bounded queues of eight: opinion
 reads and probes in one, generation and spec registration/deletion in the
 other. A generation pauses before every prefill chunk and decoded token, and
 the worker serves waiting reads and probes there, so a read waits one chunk
