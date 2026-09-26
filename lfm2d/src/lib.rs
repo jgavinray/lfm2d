@@ -72,6 +72,7 @@
 pub mod adjudicator;
 pub mod chat;
 pub mod chat_session;
+pub(crate) mod state_store;
 pub mod chunk_sweep;
 pub mod config;
 pub mod constrain;

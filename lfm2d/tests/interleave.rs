@@ -89,21 +89,15 @@ impl Log {
 
 /// A "generation" named by its input: `name:steps:ms` takes `steps` steps
 /// of `ms` each, pausing before every one as the real engine pauses before
-/// every chunk and token. A read named `slow` takes 400 ms, checking its
-/// own cancellation as it goes.
-struct Stub(Log);
-impl Generator for Stub {
-    fn generate(
-        &mut self,
-        r: &AdjudicateRequest,
-        at: &dyn YieldPoint<Self>,
-    ) -> Result<AdjudicateResponse, Failure> {
-        if r.opinion {
-            at.check()?;
-            self.0.push(Event::Read(format!("f8 {}", r.input)));
-            return Ok(response(r));
-        }
-        let mut parts = r.input.split(':');
+/// every chunk and token. `bg:name:steps:ms` instead queues that as the
+/// stub's own background work (as a chat turn queues tail prefills) and
+/// returns at once. A read named `slow` takes 400 ms, checking its own
+/// cancellation as it goes.
+struct Stub(Log, std::collections::VecDeque<String>);
+impl Stub {
+    /// `name:steps:ms`, pausing before every step; logs how it ended.
+    fn steps(&mut self, script: &str, at: &dyn YieldPoint<Self>) -> Result<(), Failure> {
+        let mut parts = script.split(':');
         let name = parts.next().unwrap().to_string();
         let steps: usize = parts.next().unwrap().parse().unwrap();
         let ms: u64 = parts.next().unwrap().parse().unwrap();
@@ -117,7 +111,33 @@ impl Generator for Stub {
         }
         at.check()?;
         self.0.push(Event::Done(name));
+        Ok(())
+    }
+}
+impl Generator for Stub {
+    fn generate(
+        &mut self,
+        r: &AdjudicateRequest,
+        at: &dyn YieldPoint<Self>,
+    ) -> Result<AdjudicateResponse, Failure> {
+        if r.opinion {
+            at.check()?;
+            self.0.push(Event::Read(format!("f8 {}", r.input)));
+            return Ok(response(r));
+        }
+        if let Some(task) = r.input.strip_prefix("bg:") {
+            self.1.push_back(task.to_string());
+            return Ok(response(r));
+        }
+        self.steps(&r.input, at)?;
         Ok(response(r))
+    }
+    fn background(&mut self, at: &dyn YieldPoint<Self>) -> bool {
+        let Some(task) = self.1.pop_front() else {
+            return false;
+        };
+        let _ = self.steps(&task, at);
+        true
     }
     fn opine(
         &mut self,
@@ -226,7 +246,7 @@ fn response(r: &AdjudicateRequest) -> AdjudicateResponse {
 
 fn spawn() -> (Handle, Log) {
     let log = Log::default();
-    (Handle::spawn(Stub(log.clone()), (&info()).into()).with_menu(menu()), log)
+    (Handle::spawn(Stub(log.clone(), Default::default()), (&info()).into()).with_menu(menu()), log)
 }
 
 fn generation(input: &str, timeout_ms: u64) -> AdjudicateRequest {
@@ -451,4 +471,45 @@ async fn stop_cancels_the_read_at_a_pause_and_the_paused_generation() {
     assert_eq!(read_task.await.unwrap().unwrap_err().status(), 408);
     assert_eq!(gen_task.await.unwrap().unwrap_err().status(), 408);
     assert!(log.position(&Event::Read("slow".into())).is_none(), "the cancelled read never finished");
+}
+
+/// Background work runs only when every queue is empty, reads overtake it
+/// at its pauses, and nothing Generative (a registration here, which can
+/// remove a spec by eviction) ever runs at them: it waits for the task.
+#[tokio::test]
+async fn background_work_runs_when_idle_reads_overtake_it_and_admin_waits_for_it() {
+    let (h, log) = spawn();
+    // Queued behind a generation: it must not start until the generation is done.
+    let first = tokio::spawn({
+        let h = h.clone();
+        async move { h.evaluate(generation("gen:20:2", 60_000)).await }
+    });
+    log.wait_for(Event::Step("gen".into(), 0)).await;
+    h.evaluate(generation("bg:bg:500:2", 60_000)).await.expect("queued");
+    first.await.unwrap().expect("gen");
+    log.wait_for(Event::Step("bg".into(), 3)).await;
+    h.opine(read("during background")).await.expect("the read is served");
+    let register = tokio::spawn({
+        let h = h.clone();
+        async move { h.register(br#"{"input_label":"Input","system":"Judge."}"#.to_vec()).await }
+    });
+    assert_eq!(register.await.unwrap().unwrap_err().status(), 422);
+    let at = |e: Event| log.position(&e).unwrap_or_else(|| panic!("{e:?}: {:?}", log.events()));
+    let bg_start = at(Event::Step("bg".into(), 0));
+    let bg_done = at(Event::Done("bg".into()));
+    assert!(at(Event::Done("gen".into())) < bg_start, "background waits for queued work");
+    let read_at = at(Event::Read("during background".into()));
+    assert!(bg_start < read_at && read_at < bg_done, "the read overtook the background task");
+    assert!(bg_done < at(Event::Register), "admin never runs at a background pause");
+}
+
+/// Stopping the daemon ends a background task at its next pause.
+#[tokio::test]
+async fn stop_ends_a_background_task_at_its_next_pause() {
+    let (h, log) = spawn();
+    h.evaluate(generation("bg:bg:5000:1", 60_000)).await.expect("queued");
+    log.wait_for(Event::Step("bg".into(), 2)).await;
+    h.stop_signal().store(true, std::sync::atomic::Ordering::SeqCst);
+    log.wait_for(Event::Stopped("bg".into())).await;
+    assert!(log.position(&Event::Done("bg".into())).is_none());
 }

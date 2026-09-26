@@ -55,6 +55,7 @@ fn cli_with_token_classifier_only() -> Cli {
         opinion_specs: Vec::new(),
         opinion_spec_capacity: 8,
         chat_checkpoint_budget_mib: 16384,
+        state_cache_budget_mib: 16384,
         embedder_dir: None,
         router_dir: None,
         token_classifier_dir: vec![dir],
