@@ -28,6 +28,8 @@ use lfm2d::engine_real::RealEngine;
 use lfm2d::server::{build_router, AppState};
 use lfm2d::worker::WorkerHandle;
 
+mod support;
+
 fn token_classifier_dir() -> PathBuf {
     if let Ok(d) = std::env::var("LFM2_TOKEN_CLF_DIR") {
         return PathBuf::from(d);
@@ -36,6 +38,7 @@ fn token_classifier_dir() -> PathBuf {
 }
 
 fn cli_with_token_classifier_only() -> Cli {
+    support::memory_guard::arm();
     let dir = token_classifier_dir();
     assert!(
         dir.join("model.safetensors").is_file(),

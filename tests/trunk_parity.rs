@@ -11,6 +11,9 @@
 //! test that quietly passes when it had nothing to compare is worse than no
 //! test at all.
 
+#[path = "support/memory_guard.rs"]
+mod memory_guard;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -29,6 +32,7 @@ fn models_dir() -> PathBuf {
 }
 
 fn checkpoint() -> PathBuf {
+    memory_guard::arm();
     let dir = models_dir().join(MODEL);
     assert!(
         dir.join("model.safetensors").is_file(),

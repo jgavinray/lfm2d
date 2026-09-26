@@ -13,11 +13,12 @@
 //!
 //! Ignored by default: each test loads and hashes the 6 GB GGUF (the first
 //! test twice, so that the alone and the interleaved runs start from empty
-//! caches). Run them one at a time:
+//! caches). `tests/support` names the GPU (`LFM2D_TEST_GPU`, default rocm;
+//! never cpu or auto) and arms the host-memory guard. Run them one at a time:
 //!
 //!   cargo test -p lfm2d --release --features rocm --test interleave_real \
 //!     -- --ignored --test-threads=1 --nocapture
-use clap::Parser as _;
+mod support;
 use lfm2d::adjudicator::{AdjudicateRequest, Adjudicator, Failure, Generator, YieldPoint};
 use lfm2d::config::Cli;
 use lfm2d::opinion_api::{OpinionRequest, OpinionState, ResolvedQuestion};
@@ -33,36 +34,8 @@ const FIELDS_FIRST: &str = "email-triage-v1";
 /// true`) runs here, on a second spec's caches.
 const VERDICT_ONLY: &str = "email-verdict-opinion-v1";
 
-fn models() -> String {
-    // `strip_suffix`, not `trim_end_matches`: the latter strips BOTH
-    // `/lfm2d`s off a checkout at `.../lfm2d/lfm2d`.
-    std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-        let crate_dir = env!("CARGO_MANIFEST_DIR");
-        format!("{}/.models", crate_dir.strip_suffix("/lfm2d").unwrap_or(crate_dir))
-    })
-}
-
 fn cli() -> Cli {
-    let model = std::env::var("LFM2D_ADJUDICATOR_MODEL")
-        .unwrap_or_else(|_| format!("{}/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf", models()));
-    let tokenizer = std::env::var("LFM2D_ADJUDICATOR_TOKENIZER")
-        .unwrap_or_else(|_| format!("{}/LFM2.5-8B-A1B/tokenizer.json", models()));
-    let spec = |name: &str| format!("{}/tests/fixtures/specs/{name}.json", env!("CARGO_MANIFEST_DIR"));
-    Cli::parse_from([
-        "lfm2d",
-        "--bind-addr",
-        "127.0.0.1:0",
-        "--adjudicator-model",
-        &model,
-        "--adjudicator-tokenizer",
-        &tokenizer,
-        "--opinion-spec",
-        &spec(FIELDS_FIRST),
-        "--opinion-spec",
-        &spec(VERDICT_ONLY),
-        "--adjudicator-context",
-        "4096",
-    ])
+    support::adjudicator_cli(&[FIELDS_FIRST, VERDICT_ONLY])
 }
 
 /// One line (the spec reads the email as one line), long enough that its
@@ -215,6 +188,7 @@ fn acts(adjudicator: &Adjudicator) -> Vec<Act> {
             serde_json::from_value(json!({
                 "spec": VERDICT_ONLY,
                 "input": "Email: Where is my parcel? The tracking page has not changed in a week.",
+                "max_tokens": 512,
                 "opinion": true,
             }))
             .unwrap(),
@@ -246,7 +220,7 @@ fn generation_and_reads_are_bit_identical_with_and_without_interleaving() {
 
     // Alone, from empty caches: each generation, then each act in order.
     let (alone_traced, alone_plain, alone_acts, prefill_chunks, prefix_tokens) = {
-        let mut adjudicator = Adjudicator::load(&cli()).expect("load");
+        let mut adjudicator = support::load_adjudicator(&cli());
         let acts = acts(&adjudicator);
         let t = adjudicator.generate(&traced, &ok).expect("generate alone");
         let p = adjudicator.generate(&plain, &ok).expect("generate alone, plain");
@@ -267,7 +241,7 @@ fn generation_and_reads_are_bit_identical_with_and_without_interleaving() {
     // Interleaved, from empty caches: the same jobs in the same order, the
     // acts now served at pauses inside the traced generation (prefill and
     // decode) and inside the plain one (decode only, a ready hit).
-    let mut adjudicator = Adjudicator::load(&cli()).expect("load again");
+    let mut adjudicator = support::load_adjudicator(&cli());
     let acts = acts(&adjudicator);
     let at = Interleaver::new(
         &acts,
@@ -307,7 +281,7 @@ fn generation_and_reads_are_bit_identical_with_and_without_interleaving() {
 #[tokio::test]
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host"]
 async fn a_read_overtakes_a_real_generation_through_the_worker() {
-    let adjudicator = Adjudicator::load(&cli()).expect("load");
+    let adjudicator = support::load_adjudicator(&cli());
     let menu = adjudicator.menu();
     let info = adjudicator.info();
     let handle = lfm2d::adjudicator::Handle::spawn(adjudicator, info).with_menu(menu);

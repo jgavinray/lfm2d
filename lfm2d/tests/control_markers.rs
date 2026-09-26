@@ -24,6 +24,14 @@ fn prompt_content_refuses_every_control_marker() {
         p.input_label = format!("In{marker}put").replace(':', "");
         assert!(p.render_prefix().is_err(), "input_label let {marker:?} through");
 
+        let mut p = spec("email-triage-tools-v1.json");
+        let key = serde_json::json!(text);
+        p.tools = vec![serde_json::from_str(&format!(
+            r#"{{"type":"function","function":{{"name":"f","parameters":{{"properties":{{{key}:{{"type":"string"}}}}}}}}}}"#
+        ))
+        .unwrap()];
+        assert!(p.render_prefix().is_err(), "a tool schema key let {marker:?} through");
+
         let base = spec("email-triage-opinion-v1.json").opinion.unwrap();
         for edit in [
             |o: &mut OpinionSpec, t: &str| o.prefill = format!("{}{t}", o.prefill),

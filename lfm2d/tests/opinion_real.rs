@@ -8,14 +8,14 @@
 //! (`docs/lfm25-chunk-kernels.md`). And a second read of the same bytes is a
 //! described-cache hit that returns the same numbers.
 //!
-//! Ignored by default: it hashes and loads a 6 GB GGUF. Device is `auto`, so
-//! build with `--features rocm` on a GPU host; the CPU path is a reference,
-//! not a fallback, and takes hours on the 8B.
+//! Ignored by default: it hashes and loads a 6 GB GGUF. `tests/support`
+//! names the GPU (`LFM2D_TEST_GPU`, default rocm; never cpu or auto) and
+//! arms the host-memory guard. Build with `--features rocm`.
 //!
 //!   LFM2D_ADJUDICATOR_MODEL=... LFM2D_ADJUDICATOR_TOKENIZER=... \
-//!   cargo test -p lfm2d --features rocm --test opinion_real -- --ignored --nocapture
-use clap::Parser as _;
-use lfm2d::adjudicator::{AdjudicateRequest, Adjudicator, Generator};
+//!   cargo test -p lfm2d --release --features rocm --test opinion_real -- --ignored --test-threads=1 --nocapture
+mod support;
+use lfm2d::adjudicator::{AdjudicateRequest, Generator};
 use lfm2d::config::Cli;
 use lfm2d::opinion_api::{OpinionRequest, OpinionState, SpecMenuEntry};
 
@@ -27,33 +27,7 @@ use lfm2d::opinion_api::{OpinionRequest, OpinionState, SpecMenuEntry};
 const SPEC: &str = "email-triage-v1";
 
 fn cli() -> Cli {
-    let model = std::env::var("LFM2D_ADJUDICATOR_MODEL").unwrap_or_else(|_| {
-        let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
-        });
-        format!("{models}/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf")
-    });
-    // A worktree has no `.models`; `LFM2_MODELS_DIR` points at main's, as
-    // the other real-model tests expect.
-    let tokenizer = std::env::var("LFM2D_ADJUDICATOR_TOKENIZER").unwrap_or_else(|_| {
-        let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
-        });
-        format!("{models}/LFM2.5-8B-A1B/tokenizer.json")
-    });
-    Cli::parse_from([
-        "lfm2d",
-        "--bind-addr",
-        "127.0.0.1:0",
-        "--adjudicator-model",
-        &model,
-        "--adjudicator-tokenizer",
-        &tokenizer,
-        "--opinion-spec",
-        &format!("{}/tests/fixtures/specs/{SPEC}.json", env!("CARGO_MANIFEST_DIR")),
-        "--adjudicator-context",
-        "4096",
-    ])
+    support::adjudicator_cli(&[SPEC])
 }
 
 /// The generative path's own verdict slot: the step after the generated text
@@ -73,7 +47,7 @@ fn slot_step(steps: &[lfm2d::types::StepDistribution]) -> Option<usize> {
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host, hours on CPU"]
 fn describe_then_read_stands_at_the_generative_paths_own_slot() {
     let cli = cli();
-    let mut adjudicator = Adjudicator::load(&cli).expect("load the adjudicator");
+    let mut adjudicator = support::load_adjudicator(&cli);
     let menu = adjudicator.menu();
     let entry: &SpecMenuEntry = menu
         .iter()
@@ -99,6 +73,7 @@ fn describe_then_read_stands_at_the_generative_paths_own_slot() {
         let generative: AdjudicateRequest = serde_json::from_value(serde_json::json!({
             "spec": SPEC,
             "input": state,
+            "max_tokens": 512,
             "distributions": {"top_k": 8}
         }))
         .unwrap();
@@ -232,7 +207,7 @@ fn describe_then_read_stands_at_the_generative_paths_own_slot() {
         // from the described state and write the report the fresh generation
         // wrote, byte for byte, decoding only what follows the slot.
         let plain: AdjudicateRequest =
-            serde_json::from_value(serde_json::json!({"spec": SPEC, "input": state})).unwrap();
+            serde_json::from_value(serde_json::json!({"spec": SPEC, "input": state, "max_tokens": 512})).unwrap();
         let resumed = adjudicator.generate(&plain, &ok).expect("resume");
         assert_eq!(
             resumed.resumed_tokens,
@@ -323,7 +298,7 @@ fn describe_then_read_stands_at_the_generative_paths_own_slot() {
         // prefill takes a different kernel schedule and is documented to
         // change the text (docs/lfm25-chunk-kernels.md; 27 of 40 rows once).
         let cold: AdjudicateRequest = serde_json::from_value(
-            serde_json::json!({"spec": SPEC, "input": state, "use_cache": false}),
+            serde_json::json!({"spec": SPEC, "input": state, "max_tokens": 512, "use_cache": false}),
         )
         .unwrap();
         let fresh = adjudicator.generate(&cold, &ok).expect("cold");

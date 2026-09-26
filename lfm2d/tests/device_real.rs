@@ -9,6 +9,8 @@ use lfm2d::engine_real::RealEngine;
 use lfm2d::types::EmbedKind;
 use lfm2d::worker::InferenceEngine;
 
+mod support;
+
 fn arguments(device: &str) -> Cli {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     let models = std::env::var_os("LFM2_MODELS_DIR").map(PathBuf::from).unwrap_or(root.join(".models"));
@@ -32,6 +34,7 @@ fn close(cpu: f32, gpu: f32) {
 fn all_heads_agree_between_cpu_and_explicit_gpu() {
     let backend = std::env::var("LFM2D_TEST_GPU").expect("set LFM2D_TEST_GPU to rocm/cuda/metal");
     assert!(["rocm", "cuda", "metal"].contains(&backend.as_str()), "GPU must be explicit, not auto/CPU");
+    support::memory_guard::arm();
     let cpu = RealEngine::load(&arguments("cpu")).expect("load every head on CPU");
     let gpu = RealEngine::load(&arguments(&backend)).expect("load every head on GPU; no skip or fallback");
     assert_eq!(cpu.execution_metadata().device_type, "cpu");

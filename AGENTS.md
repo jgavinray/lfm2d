@@ -128,3 +128,10 @@ fixtures, not documentation — the fixtures have contradicted plausible
 assumptions repeatedly, starting on day 0. Corpora never live in the repo;
 tools print aggregates, never raw rows. `CLAUDE.md` is a symlink to this
 file.
+
+Every test that loads real weights calls `memory_guard::arm()`
+(`tests/support/memory_guard.rs`: aborts under `LFM2_TEST_MEM_FLOOR_GIB`,
+default 8, of MemAvailable, which sees GTT where RSS does not); real 8B
+tests load through `lfm2d/tests/support` (explicit GPU, never CPU or auto).
+Wrap every cargo build/test and GPU or >8 GiB run in
+`flock ~/.cache/zorak-heavy.lock <cmd>`, one build or run per hold.

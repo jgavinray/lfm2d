@@ -22,6 +22,9 @@
 //! These tests need the real weights, which are far too large to commit.
 //! They fail loudly with a fetch command rather than skipping.
 
+#[path = "support/memory_guard.rs"]
+mod memory_guard;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -40,6 +43,7 @@ fn models_dir() -> PathBuf {
 }
 
 fn checkpoint() -> PathBuf {
+    memory_guard::arm();
     let dir = models_dir().join(MODEL);
     assert!(
         dir.join("model.safetensors").is_file(),

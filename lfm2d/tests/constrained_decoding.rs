@@ -10,12 +10,13 @@
 //!    Random logits are a harsher adversary than a real model — a model at
 //!    least wants to produce JSON.
 //! 2. **A real checkpoint**, `#[ignore]`d for runtime (it hashes and loads a
-//!    6 GB GGUF and then decodes on CPU), gated the way `integration_real_spans.rs`
-//!    gates: FAIL LOUDLY with a fetch pointer rather than silently skip.
+//!    6 GB GGUF and decodes on the GPU `tests/support` names, never CPU),
+//!    gated the way `integration_real_spans.rs` gates: FAIL LOUDLY with a
+//!    fetch pointer rather than silently skip.
 //!    `LFM2D_ADJUDICATOR_MODEL` / `LFM2_MODELS_DIR` override the defaults.
 //!
 //! Run the real tier with:
-//! `cargo test -p lfm2d --release --test constrained_decoding -- --ignored --nocapture`
+//! `cargo test -p lfm2d --release --features rocm --test constrained_decoding -- --ignored --test-threads=1 --nocapture`
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,6 +25,8 @@ use candle_core::{Device, Tensor};
 use lfm2d::adjudicator::{Reasoning, validate_report};
 use lfm2d::constrain::{Decoder, Program, Vocabulary};
 use serde_json::{Value, json};
+
+mod support;
 
 /// A five-field schema, one of them an enum, `required` order deliberately
 /// different from a naive alphabetical or `properties` order. Kept inline
@@ -582,10 +585,9 @@ fn gguf_path() -> PathBuf {
 /// with the tool-calling prompt (no schema, so `Decoder::Free`, i.e. the
 /// unmodified `GreedySampler` path). Reports ms/token for each.
 #[test]
-#[ignore = "two 6 GB model loads; build with --features rocm or this takes hours"]
+#[ignore = "two 6 GB model loads, one after the other, on the GPU `tests/support` names"]
 fn constrained_versus_free_decode_cost_on_real_weights() {
-    use clap::Parser;
-    use lfm2d::adjudicator::{AdjudicateRequest, Adjudicator, Generator};
+    use lfm2d::adjudicator::{AdjudicateRequest, Generator};
 
     let model = gguf_path();
     assert!(model.is_file(), "missing adjudicator weights at {}", model.display());
@@ -604,16 +606,8 @@ fn constrained_versus_free_decode_cost_on_real_weights() {
     for prompt_name in ["email-triage-v1.json", "email-triage-tools-v1.json"] {
         let prompt = specs_dir().join(prompt_name);
         assert!(prompt.is_file(), "missing prompt at {}", prompt.display());
-        let cli = lfm2d::config::Cli::parse_from([
-            "lfm2d".to_string(),
-            "--bind-addr=127.0.0.1:0".into(),
-            "--dtype=f32".into(),
-            format!("--adjudicator-model={}", model.display()),
-            format!("--adjudicator-tokenizer={}", tokenizer.display()),
-            format!("--opinion-spec={}", prompt.display()),
-        ]);
-        let mut adjudicator = Adjudicator::load(&cli).expect("adjudicator load");
         let spec = prompt.file_stem().unwrap().to_str().unwrap().to_string();
+        let mut adjudicator = support::load_adjudicator(&support::adjudicator_cli(&[&spec]));
         let (mut tokens, mut millis) = (0usize, 0f64);
         for input in inputs {
             let response = adjudicator
@@ -647,11 +641,9 @@ fn constrained_versus_free_decode_cost_on_real_weights() {
 }
 
 #[test]
-#[ignore = "loads and hashes a 6 GB GGUF; minutes. Device is `auto`, so build \
-           with --features rocm unless you want the (very slow) CPU decode path"]
+#[ignore = "loads and hashes a 6 GB GGUF; minutes, on the GPU `tests/support` names"]
 fn real_model_reports_are_valid_including_under_an_echo_attack() {
-    use clap::Parser;
-    use lfm2d::adjudicator::{AdjudicateRequest, Adjudicator, Generator};
+    use lfm2d::adjudicator::{AdjudicateRequest, Generator};
 
     let model = gguf_path();
     assert!(
@@ -665,16 +657,8 @@ fn real_model_reports_are_valid_including_under_an_echo_attack() {
     let prompt = specs_dir().join("email-triage-v1.json");
     assert!(prompt.is_file(), "missing prompt at {}", prompt.display());
 
-    let cli = lfm2d::config::Cli::parse_from([
-        "lfm2d".to_string(),
-        "--bind-addr=127.0.0.1:0".into(),
-        "--dtype=f32".into(),
-        format!("--adjudicator-model={}", model.display()),
-        format!("--adjudicator-tokenizer={}", tokenizer.display()),
-        format!("--opinion-spec={}", prompt.display()),
-    ]);
     let loaded = std::time::Instant::now();
-    let mut adjudicator = Adjudicator::load(&cli).expect("adjudicator load");
+    let mut adjudicator = support::load_adjudicator(&support::adjudicator_cli(&["email-triage-v1"]));
     eprintln!("load: {:?}", loaded.elapsed());
 
     let schema: Value = serde_json::from_slice::<Value>(&std::fs::read(&prompt).unwrap()).unwrap()

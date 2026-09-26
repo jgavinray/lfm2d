@@ -57,6 +57,8 @@ struct Args {
     #[arg(long, requires = "inputs_file")]
     record_from_shared_prefix: bool,
     /// Text the assistant has already written, to stand at an answer slot.
+    /// An instrument, like `/v1/probe`'s `text`: control markers are not
+    /// refused (only a second reasoning region is, under a closed spec).
     #[arg(long, default_value = "")]
     assistant_prefill: String,
 

@@ -56,7 +56,7 @@ const ALLOWED_ROLES: &[&str] = &["system", "user", "assistant"];
 pub struct ProbeRequest {
     /// Exact bytes, fed as-is: no chat template, no control-token
     /// restriction (unlike every other prompt path in this crate, which
-    /// refuses literal `<|`/`<think>`/`</think>` in content —
+    /// refuses [`crate::chat::CONTROL_MARKERS`] in content —
     /// [`crate::adjudicator::validate_text`]). A probe exists partly to let
     /// a caller see what the model does with exactly the bytes it hands it,
     /// including ones the generative/opinion paths would refuse to render.
@@ -103,6 +103,8 @@ pub struct ProbeRequest {
     pub top_k: usize,
     /// Each teacher-forced after the input and scored like an opinion
     /// option: per-token logprobs, sequence logprob, first-token logprob.
+    /// An instrument like `text` and `ids`, so control markers are allowed:
+    /// scoring `<|im_end|>` is how a caller asks whether the turn ends here.
     #[serde(default)]
     pub continuations: Vec<String>,
     /// Greedy steps to take after the input, under the SAME deterministic
@@ -516,6 +518,15 @@ mod tests {
         req.continuations = (0..MAX_CONTINUATIONS + 1).map(|i| i.to_string()).collect();
         assert!(req.validate().is_err());
         req.continuations = (0..MAX_CONTINUATIONS).map(|i| i.to_string()).collect();
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn a_continuation_may_carry_control_tokens() {
+        // An instrument, like `text` and `ids`: scoring `<|im_end|>` as a
+        // continuation is how a caller asks whether the model ends the turn.
+        let mut req = text_req();
+        req.continuations = crate::chat::CONTROL_MARKERS.iter().map(|m| format!("{m}x")).collect();
         assert!(req.validate().is_ok());
     }
 

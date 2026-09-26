@@ -7,6 +7,9 @@
 //!
 //! Reference: `tests/reference/dump_embedding_reference.py`.
 
+#[path = "support/memory_guard.rs"]
+mod memory_guard;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -24,6 +27,7 @@ const TEXTS: [&str; 4] = [
 ];
 
 fn checkpoint() -> PathBuf {
+    memory_guard::arm();
     let base = match std::env::var("LFM2_MODELS_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".models"),
@@ -45,8 +49,11 @@ fn reference() -> HashMap<String, Tensor> {
         .unwrap_or_else(|e| panic!("load reference {}: {e}", path.display()))
 }
 
-fn model() -> Lfm2Embedding {
-    Lfm2Embedding::from_dir(checkpoint()).expect("load embedding model")
+/// One load per test binary: the tests run in parallel, and a fresh load
+/// per test held six copies at once (12.1 GiB peak RSS).
+fn model() -> &'static Lfm2Embedding {
+    static MODEL: std::sync::OnceLock<Lfm2Embedding> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| Lfm2Embedding::from_dir(checkpoint()).expect("load embedding model"))
 }
 
 fn kinds() -> [(TextKind, &'static str); 2] {

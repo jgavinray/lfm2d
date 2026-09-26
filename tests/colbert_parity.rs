@@ -9,6 +9,9 @@
 //! Staged deliberately: token ids, then vector shapes, then the vectors,
 //! then MaxSim. A failure should name its own cause.
 
+#[path = "support/memory_guard.rs"]
+mod memory_guard;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -29,6 +32,7 @@ const DOCUMENTS: [&str; 3] = [
 ];
 
 fn checkpoint() -> PathBuf {
+    memory_guard::arm();
     let base = match std::env::var("LFM2_MODELS_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".models"),

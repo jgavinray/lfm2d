@@ -11,6 +11,9 @@
 //! breakage rather than on noise. It is NOT a benchmark and shouldn't be
 //! tuned against — see `tests/data/README.md`.
 
+#[path = "support/memory_guard.rs"]
+mod memory_guard;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -40,6 +43,7 @@ struct Query {
 }
 
 fn checkpoint() -> PathBuf {
+    memory_guard::arm();
     let base = match std::env::var("LFM2_MODELS_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".models"),

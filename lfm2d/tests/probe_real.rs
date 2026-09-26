@@ -40,14 +40,14 @@
 //! decode loop at all. That is the read this file certifies bit-identical
 //! parity against.
 //!
-//! Ignored by default: it hashes and loads a 6 GB GGUF. Device is `auto`, so
-//! build with `--features rocm` on a GPU host; the CPU path is a reference,
-//! not a fallback.
+//! Ignored by default: it hashes and loads a 6 GB GGUF. `tests/support`
+//! names the GPU (`LFM2D_TEST_GPU`, default rocm; never cpu or auto) and
+//! arms the host-memory guard. Build with `--features rocm`.
 //!
 //!   LFM2D_ADJUDICATOR_MODEL=... LFM2D_ADJUDICATOR_TOKENIZER=... \
-//!   cargo test -p lfm2d --release --features rocm --test probe_real -- --ignored --nocapture
-use clap::Parser as _;
-use lfm2d::adjudicator::{AdjudicateRequest, Adjudicator, Generator, PromptSpec};
+//!   cargo test -p lfm2d --release --features rocm --test probe_real -- --ignored --test-threads=1 --nocapture
+mod support;
+use lfm2d::adjudicator::{AdjudicateRequest, Generator, PromptSpec};
 use lfm2d::config::Cli;
 use lfm2d::opinion_api::{OpinionRequest, OpinionState, SpecMenuEntry};
 use lfm2d::probe_api::ProbeRequest;
@@ -65,35 +65,7 @@ const EMAILS: [&str; 2] = [
 ];
 
 fn cli() -> Cli {
-    let model = std::env::var("LFM2D_ADJUDICATOR_MODEL").unwrap_or_else(|_| {
-        let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
-        });
-        format!("{models}/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf")
-    });
-    // A worktree has no `.models`; `LFM2_MODELS_DIR` points at main's, as
-    // the other real-model tests expect.
-    let tokenizer = std::env::var("LFM2D_ADJUDICATOR_TOKENIZER").unwrap_or_else(|_| {
-        let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
-        });
-        format!("{models}/LFM2.5-8B-A1B/tokenizer.json")
-    });
-    Cli::parse_from([
-        "lfm2d",
-        "--bind-addr",
-        "127.0.0.1:0",
-        "--adjudicator-model",
-        &model,
-        "--adjudicator-tokenizer",
-        &tokenizer,
-        "--opinion-spec",
-        &spec_path(&format!("{VERDICT_ONLY}.json")),
-        "--opinion-spec",
-        &spec_path(&format!("{FIELDS_FIRST}.json")),
-        "--adjudicator-context",
-        "4096",
-    ])
+    support::adjudicator_cli(&[VERDICT_ONLY, FIELDS_FIRST])
 }
 
 fn spec_path(name: &str) -> String {
@@ -114,7 +86,7 @@ fn spec_path(name: &str) -> String {
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host, hours on CPU"]
 fn probe_reproduces_the_f8_opinion_reads_slot_bit_identically_when_warm() {
     let cli = cli();
-    let mut adjudicator = Adjudicator::load(&cli).expect("load the adjudicator");
+    let mut adjudicator = support::load_adjudicator(&cli);
     let menu = adjudicator.menu();
     let entry: &SpecMenuEntry =
         menu.iter().find(|e| e.spec == VERDICT_ONLY).expect("spec on the menu");
@@ -140,6 +112,7 @@ fn probe_reproduces_the_f8_opinion_reads_slot_bit_identically_when_warm() {
         let f8_req: AdjudicateRequest = serde_json::from_value(serde_json::json!({
             "spec": VERDICT_ONLY,
             "input": email,
+            "max_tokens": 512,
             "opinion": true
         }))
         .unwrap();
@@ -250,7 +223,7 @@ fn probe_reproduces_the_f8_opinion_reads_slot_bit_identically_when_warm() {
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host, hours on CPU"]
 fn probe_reproduces_the_opinion_reads_slot_bit_identically_with_decode_from() {
     let cli = cli();
-    let mut adjudicator = Adjudicator::load(&cli).expect("load the adjudicator");
+    let mut adjudicator = support::load_adjudicator(&cli);
     let menu = adjudicator.menu();
     let ok = || Ok(());
 
@@ -400,7 +373,7 @@ fn probe_reproduces_the_opinion_reads_slot_bit_identically_with_decode_from() {
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host, hours on CPU"]
 fn probe_generate_and_top_k_smoke_test_on_real_weights() {
     let cli = cli();
-    let mut adjudicator = Adjudicator::load(&cli).expect("load the adjudicator");
+    let mut adjudicator = support::load_adjudicator(&cli);
     let ok = || Ok(());
     let req: ProbeRequest = serde_json::from_value(serde_json::json!({
         "text": "The capital of France is",

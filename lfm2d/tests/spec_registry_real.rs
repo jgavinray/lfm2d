@@ -17,42 +17,19 @@
 //! exactly — this is a fresh cold read both times, no cache to blur a
 //! difference.
 //!
-//! Ignored by default: it hashes and loads a 6 GB GGUF. Device is `auto`,
-//! so build with `--features rocm` on a GPU host.
+//! Ignored by default: it hashes and loads a 6 GB GGUF. `tests/support`
+//! names the GPU (`LFM2D_TEST_GPU`, default rocm; never cpu or auto) and
+//! arms the host-memory guard. Build with `--features rocm`.
 //!
 //!   LFM2D_ADJUDICATOR_MODEL=... LFM2D_ADJUDICATOR_TOKENIZER=... \
-//!   cargo test -p lfm2d --features rocm --test spec_registry_real -- --ignored --nocapture
-use clap::Parser as _;
-use lfm2d::adjudicator::{Adjudicator, Generator};
+//!   cargo test -p lfm2d --release --features rocm --test spec_registry_real -- --ignored --test-threads=1 --nocapture
+mod support;
+use lfm2d::adjudicator::Generator;
 use lfm2d::config::Cli;
 use lfm2d::opinion_api::OpinionRequest;
 
 fn cli() -> Cli {
-    let model = std::env::var("LFM2D_ADJUDICATOR_MODEL").unwrap_or_else(|_| {
-        let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
-        });
-        format!("{models}/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf")
-    });
-    let tokenizer = std::env::var("LFM2D_ADJUDICATOR_TOKENIZER").unwrap_or_else(|_| {
-        let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
-        });
-        format!("{models}/LFM2.5-8B-A1B/tokenizer.json")
-    });
-    Cli::parse_from([
-        "lfm2d",
-        "--bind-addr",
-        "127.0.0.1:0",
-        "--adjudicator-model",
-        &model,
-        "--adjudicator-tokenizer",
-        &tokenizer,
-        "--opinion-spec",
-        &format!("{}/tests/fixtures/specs/email-triage-v1.json", env!("CARGO_MANIFEST_DIR")),
-        "--adjudicator-context",
-        "4096",
-    ])
+    support::adjudicator_cli(&["email-triage-v1"])
 }
 
 fn prompt_json(bytes: &[u8]) -> serde_json::Value {
@@ -63,7 +40,7 @@ fn prompt_json(bytes: &[u8]) -> serde_json::Value {
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host"]
 fn a_runtime_registered_copy_reads_bit_identical_to_the_boot_loaded_spec() {
     let cli = cli();
-    let mut adjudicator = Adjudicator::load(&cli).expect("load the adjudicator");
+    let mut adjudicator = support::load_adjudicator(&cli);
     let ok = || Ok(());
 
     let boot_menu = adjudicator.menu();
@@ -199,7 +176,7 @@ fn an_adjudicator_booted_with_no_specs_serves_the_first_upload() {
     let mut cli = cli();
     cli.opinion_specs.clear();
     cli.validate().expect("model + tokenizer alone is a valid configuration");
-    let mut adjudicator = Adjudicator::load(&cli).expect("load with an empty menu");
+    let mut adjudicator = support::load_adjudicator(&cli);
     let ok = || Ok(());
     assert!(adjudicator.menu().is_empty(), "no --opinion-spec, no menu entries");
     // The identity names the GPU target and the candle build, not just

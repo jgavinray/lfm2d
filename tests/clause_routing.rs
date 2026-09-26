@@ -14,6 +14,9 @@
 //! These tests need the real weights, which are far too large to commit.
 //! They fail loudly with a fetch command rather than skipping.
 
+#[path = "support/memory_guard.rs"]
+mod memory_guard;
+
 use std::path::PathBuf;
 
 use lfm2_encoder::Lfm2SequenceRouter;
@@ -27,7 +30,15 @@ fn models_dir() -> PathBuf {
     }
 }
 
-fn router() -> Lfm2SequenceRouter {
+/// One load per test binary: the tests run in parallel, and a fresh load
+/// per test held seven copies at once (18.5 GiB peak RSS).
+fn router() -> &'static Lfm2SequenceRouter {
+    static ROUTER: std::sync::OnceLock<Lfm2SequenceRouter> = std::sync::OnceLock::new();
+    ROUTER.get_or_init(load)
+}
+
+fn load() -> Lfm2SequenceRouter {
+    memory_guard::arm();
     let dir = models_dir().join(MODEL);
     assert!(
         dir.join("model.safetensors").is_file(),
