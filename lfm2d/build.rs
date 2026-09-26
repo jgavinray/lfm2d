@@ -6,7 +6,12 @@
 use std::path::Path;
 
 fn main() {
-    let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.lock");
+    // At run time, not `env!`: cargo reuses one build-script binary across
+    // checkouts that share a target dir (a worktree built into main's baked
+    // in its own, since-deleted path on 2026-09-26), and sets this for the
+    // tree it is building now.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR for build scripts");
+    let lock = Path::new(&manifest).join("../Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock.display());
     let text = std::fs::read_to_string(&lock)
         .unwrap_or_else(|e| panic!("reading {}: {e}", lock.display()));
