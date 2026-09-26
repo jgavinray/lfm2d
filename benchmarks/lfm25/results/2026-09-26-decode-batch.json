@@ -1,0 +1,1223 @@
+{
+ "what": "candle fork lfm25-batch: Model::decode_batch on LFM2.5-8B-A1B Q5_K_M, ROCm",
+ "commit": "a3c50501f81c676c25c1b923b2c1d3f8bdd627b7",
+ "date": "2026-09-26",
+ "device": "gfx1151 (Radeon 8060S, Ryzen AI Max+ 395), ROCm 7.2.4 / HIP 7.2.53211",
+ "checkpoint": "LFM2.5-8B-A1B-Q5_K_M.gguf",
+ "prompts": {
+  "sha256": "135aed3e21d5a34bdaf6babd1476cef0d05b112133d492935b4458af0d656291",
+  "lengths": [
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384
+  ],
+  "source": "32 real documents (lfm2d docs, ~/src READMEs, lfm2d sources), BOS + first L-1 tokens"
+ },
+ "gpu_contention": {
+  "processes_seen_on_gpu_during_final_runs": [
+   "candle_transfor",
+   "chat_real-ceee6",
+   "lfm2d"
+  ],
+  "note": "lfm2d (the deployed pod) and a kaiseki python app (68 GB, rocm-smi GPU use 100% throughout) shared the GPU; earlier runs also overlapped another agent's lfm2d chat-tail measurements. Timings are shared-GPU numbers."
+ },
+ "drift_bench": {
+  "drift": [
+   {
+    "b": 1,
+    "dp1pct_nats_max": 0.0,
+    "dtop1_nats_max": 0.0,
+    "dtop1_nats_median": 0.0,
+    "dtop20_nats_max": 0.0,
+    "dtop20_nats_median": 0.0,
+    "kl_max": 0.0,
+    "kl_median": 0.0,
+    "rows_x_steps": 8,
+    "step0_dtop1_nats_max": 0.0,
+    "step0_kl_max": 0.0,
+    "top1_agree": 8
+   },
+   {
+    "b": 2,
+    "dp1pct_nats_max": 1.0565711428152262,
+    "dtop1_nats_max": 0.5308413128949176,
+    "dtop1_nats_median": 0.04013089235210998,
+    "dtop20_nats_max": 1.0565711428152262,
+    "dtop20_nats_median": 0.1893899605614493,
+    "kl_max": 0.1007436061437443,
+    "kl_median": 0.002345084424473422,
+    "rows_x_steps": 16,
+    "step0_dtop1_nats_max": 0.012964908508390494,
+    "step0_kl_max": 0.0006810161965172743,
+    "top1_agree": 15
+   },
+   {
+    "b": 4,
+    "dp1pct_nats_max": 1.0565711428152262,
+    "dtop1_nats_max": 0.5308413128949176,
+    "dtop1_nats_median": 0.02978250770244628,
+    "dtop20_nats_max": 1.122869043193564,
+    "dtop20_nats_median": 0.19759531919574158,
+    "kl_max": 0.1007436061437443,
+    "kl_median": 0.002142843382891338,
+    "rows_x_steps": 32,
+    "step0_dtop1_nats_max": 0.10891395771318102,
+    "step0_kl_max": 0.010779233595073911,
+    "top1_agree": 31
+   },
+   {
+    "b": 8,
+    "dp1pct_nats_max": 6.77334942393081,
+    "dtop1_nats_max": 2.5473133521534663,
+    "dtop1_nats_median": 0.019892250961696334,
+    "dtop20_nats_max": 6.77334942393081,
+    "dtop20_nats_median": 0.24924577907062684,
+    "kl_max": 1.4467486987243379,
+    "kl_median": 0.0018326285995538152,
+    "rows_x_steps": 64,
+    "step0_dtop1_nats_max": 0.0896960060937495,
+    "step0_kl_max": 0.008754251988985367,
+    "top1_agree": 60
+   },
+   {
+    "b": 16,
+    "dp1pct_nats_max": 2.921278925602575,
+    "dtop1_nats_max": 2.921278925602575,
+    "dtop1_nats_median": 0.031235214473245065,
+    "dtop20_nats_max": 3.420475931828161,
+    "dtop20_nats_median": 0.3767108417287588,
+    "kl_max": 1.5764728276495492,
+    "kl_median": 0.004799924872237375,
+    "rows_x_steps": 128,
+    "step0_dtop1_nats_max": 0.1193399938918489,
+    "step0_kl_max": 0.041661445633640964,
+    "top1_agree": 117
+   },
+   {
+    "b": 32,
+    "dp1pct_nats_max": 2.921278925602575,
+    "dtop1_nats_max": 2.921278925602575,
+    "dtop1_nats_median": 0.02196164135021661,
+    "dtop20_nats_max": 4.722869621686616,
+    "dtop20_nats_median": 0.45385201363590966,
+    "kl_max": 1.5764728276495492,
+    "kl_median": 0.0031416036064967805,
+    "rows_x_steps": 256,
+    "step0_dtop1_nats_max": 0.14697555221466985,
+    "step0_kl_max": 0.045245033717648014,
+    "top1_agree": 239
+   }
+  ],
+  "drift_steps_teacher_forced": 8,
+  "prefill_seconds": 47.836597523
+ },
+ "timing_run_B_13_10_under_lock": {
+  "device_used_mib_after_load": 16958.98828125,
+  "device_used_mib_before_load": 10822.09375,
+  "drift": [],
+  "drift_steps_teacher_forced": 8,
+  "force_dmmv": null,
+  "moe_row_major_forced": null,
+  "phases": "timing",
+  "prefill_seconds": 30.725629104,
+  "prompt_lengths": [
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384
+  ],
+  "prompts_sha256": "135aed3e21d5a34bdaf6babd1476cef0d05b112133d492935b4458af0d656291",
+  "timing": [
+   {
+    "b": 1,
+    "device_used_delta_mib": 4157.8359375,
+    "kv_bytes": 1499136,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 11.629251,
+    "serial_tok_per_s": 85.99006075283782,
+    "step_ms_p50": 11.931356000000001,
+    "step_ms_p90": 12.129857000000001,
+    "steps": 24,
+    "tok_per_s": 83.81277031713746
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 4165.8359375,
+    "kv_bytes": 2998272,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 26.028955,
+    "serial_tok_per_s": 76.83750653839157,
+    "step_ms_p50": 17.752945999999998,
+    "step_ms_p90": 17.875163,
+    "steps": 24,
+    "tok_per_s": 112.65735838998216
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 4173.8359375,
+    "kv_bytes": 5996544,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 44.331388,
+    "serial_tok_per_s": 90.22952315411375,
+    "step_ms_p50": 31.09491,
+    "step_ms_p90": 33.337053999999995,
+    "steps": 24,
+    "tok_per_s": 128.63841702709544
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 4189.8359375,
+    "kv_bytes": 11993088,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 93.259883,
+    "serial_tok_per_s": 85.78179322828444,
+    "step_ms_p50": 51.164498,
+    "step_ms_p90": 53.960177,
+    "steps": 24,
+    "tok_per_s": 156.3584186832049
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 4221.8359375,
+    "kv_bytes": 23986176,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 200.381084,
+    "serial_tok_per_s": 79.84785629765334,
+    "step_ms_p50": 87.12019,
+    "step_ms_p90": 93.19066400000001,
+    "steps": 24,
+    "tok_per_s": 183.65432857756625
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 4293.8359375,
+    "kv_bytes": 47972352,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 355.06780100000003,
+    "serial_tok_per_s": 90.12363247209791,
+    "step_ms_p50": 144.040575,
+    "step_ms_p90": 156.501741,
+    "steps": 24,
+    "tok_per_s": 222.15962411980098
+   },
+   {
+    "b": 1,
+    "device_used_delta_mib": 4349.8359375,
+    "kv_bytes": 13688832,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 11.161757,
+    "serial_tok_per_s": 89.59162970489324,
+    "step_ms_p50": 11.197995,
+    "step_ms_p90": 11.245393,
+    "steps": 24,
+    "tok_per_s": 89.3017008848459
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 4371.8359375,
+    "kv_bytes": 27377664,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 22.600933,
+    "serial_tok_per_s": 88.4919219927779,
+    "step_ms_p50": 16.625858,
+    "step_ms_p90": 16.824018,
+    "steps": 24,
+    "tok_per_s": 120.29454359588539
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 4421.8359375,
+    "kv_bytes": 54755328,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 39.595158999999995,
+    "serial_tok_per_s": 101.02245074959797,
+    "step_ms_p50": 29.187062,
+    "step_ms_p90": 29.684352,
+    "steps": 24,
+    "tok_per_s": 137.04702446584037
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 4515.8359375,
+    "kv_bytes": 109510656,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 77.953865,
+    "serial_tok_per_s": 102.62480250337813,
+    "step_ms_p50": 38.14685,
+    "step_ms_p90": 38.806042999999995,
+    "steps": 24,
+    "tok_per_s": 209.71587431203363
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 4707.8359375,
+    "kv_bytes": 219021312,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 159.223623,
+    "serial_tok_per_s": 100.48760164187446,
+    "step_ms_p50": 69.541691,
+    "step_ms_p90": 70.109704,
+    "steps": 24,
+    "tok_per_s": 230.07781044611068
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 5093.8359375,
+    "kv_bytes": 438042624,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 311.611079,
+    "serial_tok_per_s": 102.69211256124818,
+    "step_ms_p50": 110.74061,
+    "step_ms_p90": 112.103409,
+    "steps": 24,
+    "tok_per_s": 288.9635518532903
+   },
+   {
+    "b": 1,
+    "device_used_delta_mib": 5185.8359375,
+    "kv_bytes": 51437568,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 11.041662,
+    "serial_tok_per_s": 90.56607601283213,
+    "step_ms_p50": 11.082879,
+    "step_ms_p90": 11.2915,
+    "steps": 24,
+    "tok_per_s": 90.2292626311268
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 5281.8359375,
+    "kv_bytes": 102875136,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 21.912114,
+    "serial_tok_per_s": 91.27371279649239,
+    "step_ms_p50": 16.748557,
+    "step_ms_p90": 17.016588,
+    "steps": 24,
+    "tok_per_s": 119.41327243893309
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 5473.8359375,
+    "kv_bytes": 205750272,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 43.850268,
+    "serial_tok_per_s": 91.2195109046996,
+    "step_ms_p50": 26.810496999999998,
+    "step_ms_p90": 27.331982,
+    "steps": 24,
+    "tok_per_s": 149.19529466387738
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 5857.8359375,
+    "kv_bytes": 411500544,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 85.892193,
+    "serial_tok_per_s": 93.14001331878904,
+    "step_ms_p50": 43.398292999999995,
+    "step_ms_p90": 44.317522,
+    "steps": 24,
+    "tok_per_s": 184.33904762106658
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 6633.8359375,
+    "kv_bytes": 823001088,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 171.492099,
+    "serial_tok_per_s": 93.29875891250244,
+    "step_ms_p50": 79.42269300000001,
+    "step_ms_p90": 80.056037,
+    "steps": 24,
+    "tok_per_s": 201.45375831061278
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 8161.8359375,
+    "kv_bytes": 1646002176,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 423.448881,
+    "serial_tok_per_s": 75.56992457845224,
+    "step_ms_p50": 133.382649,
+    "step_ms_p90": 134.049597,
+    "steps": 24,
+    "tok_per_s": 239.91126462033307
+   },
+   {
+    "b": 1,
+    "device_used_delta_mib": 8161.8359375,
+    "kv_bytes": 7372800,
+    "mean_ctx": 255.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 11.957595,
+    "serial_tok_per_s": 83.6288568060718,
+    "step_ms_p50": 11.935945,
+    "step_ms_p90": 12.402658,
+    "steps": 24,
+    "tok_per_s": 83.78054691103218
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 8161.8359375,
+    "kv_bytes": 21037056,
+    "mean_ctx": 383.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 23.867051,
+    "serial_tok_per_s": 83.79753326039317,
+    "step_ms_p50": 18.106175,
+    "step_ms_p90": 18.3544,
+    "steps": 24,
+    "tok_per_s": 110.45955316349256
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 8181.8359375,
+    "kv_bytes": 67239936,
+    "mean_ctx": 639.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 45.264593,
+    "serial_tok_per_s": 88.36929120294974,
+    "step_ms_p50": 27.777845999999997,
+    "step_ms_p90": 29.106181,
+    "steps": 24,
+    "tok_per_s": 143.9996463368686
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 8193.8359375,
+    "kv_bytes": 244580352,
+    "mean_ctx": 1199.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 115.681081,
+    "serial_tok_per_s": 69.15564698085765,
+    "step_ms_p50": 53.19184,
+    "step_ms_p90": 60.363434,
+    "steps": 24,
+    "tok_per_s": 150.3990085697355
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 8351.8359375,
+    "kv_bytes": 489160704,
+    "mean_ctx": 1199.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 212.181285,
+    "serial_tok_per_s": 75.40721605112346,
+    "step_ms_p50": 104.808163,
+    "step_ms_p90": 111.94531400000001,
+    "steps": 24,
+    "tok_per_s": 152.65986486186196
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 8629.8359375,
+    "kv_bytes": 978321408,
+    "mean_ctx": 1199.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 377.18603099999996,
+    "serial_tok_per_s": 84.83877283355704,
+    "step_ms_p50": 178.567634,
+    "step_ms_p90": 186.20587999999998,
+    "steps": 24,
+    "tok_per_s": 179.20380800923868
+   }
+  ]
+ },
+ "timing_run_A_13_03": {
+  "device_used_mib_after_load": 16958.98828125,
+  "device_used_mib_before_load": 10822.09375,
+  "drift": [],
+  "drift_steps_teacher_forced": 8,
+  "force_dmmv": null,
+  "moe_row_major_forced": null,
+  "phases": "timing",
+  "prefill_seconds": 30.177498808,
+  "prompt_lengths": [
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384,
+   256,
+   512,
+   768,
+   1024,
+   1536,
+   2048,
+   3072,
+   384
+  ],
+  "prompts_sha256": "135aed3e21d5a34bdaf6babd1476cef0d05b112133d492935b4458af0d656291",
+  "timing": [
+   {
+    "b": 1,
+    "device_used_delta_mib": 4157.8359375,
+    "kv_bytes": 1499136,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 9.466807000000001,
+    "serial_tok_per_s": 105.63223693057225,
+    "step_ms_p50": 9.552306,
+    "step_ms_p90": 9.584557,
+    "steps": 24,
+    "tok_per_s": 104.68676359404735
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 4165.8359375,
+    "kv_bytes": 2998272,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 18.916441,
+    "serial_tok_per_s": 105.72813353209519,
+    "step_ms_p50": 14.128406,
+    "step_ms_p90": 14.256155,
+    "steps": 24,
+    "tok_per_s": 141.5587858955922
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 4173.8359375,
+    "kv_bytes": 5996544,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 37.825368999999995,
+    "serial_tok_per_s": 105.74913360395772,
+    "step_ms_p50": 21.644224,
+    "step_ms_p90": 21.829399,
+    "steps": 24,
+    "tok_per_s": 184.80681035272966
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 4189.8359375,
+    "kv_bytes": 11993088,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 75.582199,
+    "serial_tok_per_s": 105.84502840410875,
+    "step_ms_p50": 34.979034999999996,
+    "step_ms_p90": 35.801734,
+    "steps": 24,
+    "tok_per_s": 228.70842491795446
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 4221.8359375,
+    "kv_bytes": 23986176,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 151.208351,
+    "serial_tok_per_s": 105.814261541679,
+    "step_ms_p50": 64.701208,
+    "step_ms_p90": 65.428398,
+    "steps": 24,
+    "tok_per_s": 247.29059154506052
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 4293.8359375,
+    "kv_bytes": 47972352,
+    "mean_ctx": 16.0,
+    "regime": "ctx16",
+    "serial_step_ms_p50": 302.367079,
+    "serial_tok_per_s": 105.83162725860113,
+    "step_ms_p50": 103.58268199999999,
+    "step_ms_p90": 104.455354,
+    "steps": 24,
+    "tok_per_s": 308.93195061313435
+   },
+   {
+    "b": 1,
+    "device_used_delta_mib": 4349.8359375,
+    "kv_bytes": 13688832,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 9.771256000000001,
+    "serial_tok_per_s": 102.3409887121983,
+    "step_ms_p50": 9.860733999999999,
+    "step_ms_p90": 9.892523,
+    "steps": 24,
+    "tok_per_s": 101.41232894021886
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 4371.8359375,
+    "kv_bytes": 27377664,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 19.504131,
+    "serial_tok_per_s": 102.54237935542987,
+    "step_ms_p50": 14.684145,
+    "step_ms_p90": 14.751441,
+    "steps": 24,
+    "tok_per_s": 136.20132462598266
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 4421.8359375,
+    "kv_bytes": 54755328,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 39.5903,
+    "serial_tok_per_s": 101.03484944544498,
+    "step_ms_p50": 22.748489,
+    "step_ms_p90": 23.309889000000002,
+    "steps": 24,
+    "tok_per_s": 175.83585441652852
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 4515.8359375,
+    "kv_bytes": 109510656,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 78.089499,
+    "serial_tok_per_s": 102.44655302501045,
+    "step_ms_p50": 37.956644999999995,
+    "step_ms_p90": 38.523434,
+    "steps": 24,
+    "tok_per_s": 210.7667840505925
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 4707.8359375,
+    "kv_bytes": 219021312,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 159.933571,
+    "serial_tok_per_s": 100.04153536970671,
+    "step_ms_p50": 69.502417,
+    "step_ms_p90": 71.222846,
+    "steps": 24,
+    "tok_per_s": 230.207821405693
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 5093.8359375,
+    "kv_bytes": 438042624,
+    "mean_ctx": 512.0,
+    "regime": "ctx512",
+    "serial_step_ms_p50": 319.609991,
+    "serial_tok_per_s": 100.12202653577248,
+    "step_ms_p50": 112.14599799999999,
+    "step_ms_p90": 114.640854,
+    "steps": 24,
+    "tok_per_s": 285.34232670522937
+   },
+   {
+    "b": 1,
+    "device_used_delta_mib": 5185.8359375,
+    "kv_bytes": 51437568,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 11.033568,
+    "serial_tok_per_s": 90.63251343536379,
+    "step_ms_p50": 11.135869,
+    "step_ms_p90": 11.247658000000001,
+    "steps": 24,
+    "tok_per_s": 89.79990694933642
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 5281.8359375,
+    "kv_bytes": 102875136,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 22.192379000000003,
+    "serial_tok_per_s": 90.12102758338796,
+    "step_ms_p50": 16.965673,
+    "step_ms_p90": 17.073755,
+    "steps": 24,
+    "tok_per_s": 117.8850965711764
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 5473.8359375,
+    "kv_bytes": 205750272,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 43.398443,
+    "serial_tok_per_s": 92.1692052408424,
+    "step_ms_p50": 26.603178000000003,
+    "step_ms_p90": 27.051627000000003,
+    "steps": 24,
+    "tok_per_s": 150.3579760282775
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 5857.8359375,
+    "kv_bytes": 411500544,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 88.20806400000001,
+    "serial_tok_per_s": 90.69465576299237,
+    "step_ms_p50": 42.871627000000004,
+    "step_ms_p90": 43.683095,
+    "steps": 24,
+    "tok_per_s": 186.60360149149457
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 6633.8359375,
+    "kv_bytes": 823001088,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 259.962735,
+    "serial_tok_per_s": 61.54728292114637,
+    "step_ms_p50": 101.062738,
+    "step_ms_p90": 112.969739,
+    "steps": 24,
+    "tok_per_s": 158.31749976930172
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 8161.8359375,
+    "kv_bytes": 1646002176,
+    "mean_ctx": 2048.0,
+    "regime": "ctx2048",
+    "serial_step_ms_p50": 360.637278,
+    "serial_tok_per_s": 88.73181435225895,
+    "step_ms_p50": 194.95569600000002,
+    "step_ms_p90": 198.173235,
+    "steps": 24,
+    "tok_per_s": 164.13985667800134
+   },
+   {
+    "b": 1,
+    "device_used_delta_mib": 8161.8359375,
+    "kv_bytes": 7372800,
+    "mean_ctx": 255.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 9.465233999999999,
+    "serial_tok_per_s": 105.6497916480459,
+    "step_ms_p50": 9.557146000000001,
+    "step_ms_p90": 9.599224999999999,
+    "steps": 24,
+    "tok_per_s": 104.63374735512043
+   },
+   {
+    "b": 2,
+    "device_used_delta_mib": 8161.8359375,
+    "kv_bytes": 21037056,
+    "mean_ctx": 383.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 22.000439,
+    "serial_tok_per_s": 90.90727689570194,
+    "step_ms_p50": 14.345131,
+    "step_ms_p90": 14.652536000000001,
+    "steps": 24,
+    "tok_per_s": 139.4201279862833
+   },
+   {
+    "b": 4,
+    "device_used_delta_mib": 8181.8359375,
+    "kv_bytes": 67239936,
+    "mean_ctx": 639.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 42.469114000000005,
+    "serial_tok_per_s": 94.18609486414056,
+    "step_ms_p50": 28.597529,
+    "step_ms_p90": 29.789328,
+    "steps": 24,
+    "tok_per_s": 139.87222462472195
+   },
+   {
+    "b": 8,
+    "device_used_delta_mib": 8193.8359375,
+    "kv_bytes": 244580352,
+    "mean_ctx": 1199.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 100.737851,
+    "serial_tok_per_s": 79.4140426918577,
+    "step_ms_p50": 41.00671,
+    "step_ms_p90": 42.239866,
+    "steps": 24,
+    "tok_per_s": 195.09002307183385
+   },
+   {
+    "b": 16,
+    "device_used_delta_mib": 8351.8359375,
+    "kv_bytes": 489160704,
+    "mean_ctx": 1199.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 165.16602799999998,
+    "serial_tok_per_s": 96.87222120519846,
+    "step_ms_p50": 77.350797,
+    "step_ms_p90": 113.37086000000001,
+    "steps": 24,
+    "tok_per_s": 206.8498402156089
+   },
+   {
+    "b": 32,
+    "device_used_delta_mib": 8629.8359375,
+    "kv_bytes": 978321408,
+    "mean_ctx": 1199.0,
+    "regime": "mixed",
+    "serial_step_ms_p50": 381.882806,
+    "serial_tok_per_s": 83.79534112881741,
+    "step_ms_p50": 125.289823,
+    "step_ms_p90": 129.05306199999998,
+    "steps": 24,
+    "tok_per_s": 255.40781552544775
+   }
+  ]
+ },
+ "timing_runs_note": "Run B (13:10-13:12, under zorak-heavy.lock): only the lfm2d pod shared the GPU, but B=1 read 11-12 ms against 9.5 in run A, so host or pod load was present. Run A (13:03-13:05): quiet for ctx16 and ctx512; another agent's chat_real test joined from 13:05 (ctx2048 B>=16 and mixed are contaminated). Earlier runs overlapped other agents' GPU jobs throughout and are not reported.",
+ "drift_force_dmmv": [
+  {
+   "b": 1,
+   "dp1pct_nats_max": 0.0,
+   "dtop1_nats_max": 0.0,
+   "dtop1_nats_median": 0.0,
+   "dtop20_nats_max": 0.0,
+   "dtop20_nats_median": 0.0,
+   "kl_max": 0.0,
+   "kl_median": 0.0,
+   "rows_x_steps": 8,
+   "step0_dtop1_nats_max": 0.0,
+   "step0_kl_max": 0.0,
+   "top1_agree": 8
+  },
+  {
+   "b": 2,
+   "dp1pct_nats_max": 0.32186333151534186,
+   "dtop1_nats_max": 0.2102640488557519,
+   "dtop1_nats_median": 0.015518819609571466,
+   "dtop20_nats_max": 0.5826397513509924,
+   "dtop20_nats_median": 0.062362504547955666,
+   "kl_max": 0.022112572152093,
+   "kl_median": 0.0002814106914855162,
+   "rows_x_steps": 16,
+   "step0_dtop1_nats_max": 0.030109925297477247,
+   "step0_kl_max": 0.0007008074637774832,
+   "top1_agree": 16
+  },
+  {
+   "b": 4,
+   "dp1pct_nats_max": 0.7048628952686933,
+   "dtop1_nats_max": 0.2102640488557519,
+   "dtop1_nats_median": 0.012269304619312749,
+   "dtop20_nats_max": 1.0086539414112714,
+   "dtop20_nats_median": 0.062362504547955666,
+   "kl_max": 0.05604287575333768,
+   "kl_median": 0.0002062054317145094,
+   "rows_x_steps": 32,
+   "step0_dtop1_nats_max": 0.044544499506532276,
+   "step0_kl_max": 0.0012273493034159872,
+   "top1_agree": 32
+  },
+  {
+   "b": 8,
+   "dp1pct_nats_max": 0.8435268493235384,
+   "dtop1_nats_max": 0.2548872344476898,
+   "dtop1_nats_median": 0.006798773461216712,
+   "dtop20_nats_max": 1.299266504768248,
+   "dtop20_nats_median": 0.07676619641449278,
+   "kl_max": 0.05604287575333768,
+   "kl_median": 0.00018215106416507012,
+   "rows_x_steps": 64,
+   "step0_dtop1_nats_max": 0.044544499506532276,
+   "step0_kl_max": 0.0012273493034159872,
+   "top1_agree": 63
+  },
+  {
+   "b": 16,
+   "dp1pct_nats_max": 1.9443283989055615,
+   "dtop1_nats_max": 1.9443283989055615,
+   "dtop1_nats_median": 0.00837540663520997,
+   "dtop20_nats_max": 1.9443283989055615,
+   "dtop20_nats_median": 0.09488955819372791,
+   "kl_max": 0.47237101217632743,
+   "kl_median": 0.0002332880801878179,
+   "rows_x_steps": 128,
+   "step0_dtop1_nats_max": 0.044544499506532276,
+   "step0_kl_max": 0.0012273493034159872,
+   "top1_agree": 126
+  },
+  {
+   "b": 32,
+   "dp1pct_nats_max": 1.9443283989055615,
+   "dtop1_nats_max": 1.9443283989055615,
+   "dtop1_nats_median": 0.00541842695542627,
+   "dtop20_nats_max": 4.179271638814537,
+   "dtop20_nats_median": 0.0997688592517143,
+   "kl_max": 0.47237101217632743,
+   "kl_median": 0.00018604027913164846,
+   "rows_x_steps": 256,
+   "step0_dtop1_nats_max": 0.044544499506532276,
+   "step0_kl_max": 0.0019403064778467215,
+   "top1_agree": 254
+  }
+ ],
+ "prefill_chunk_sweep": [
+  {
+   "chunk": 1,
+   "ms": 9.71,
+   "tok_per_s": 103.0
+  },
+  {
+   "chunk": 4,
+   "ms": 20.67,
+   "tok_per_s": 193.0
+  },
+  {
+   "chunk": 8,
+   "ms": 31.64,
+   "tok_per_s": 253.0
+  },
+  {
+   "chunk": 16,
+   "ms": 64.79,
+   "tok_per_s": 247.0
+  },
+  {
+   "chunk": 32,
+   "ms": 109.51,
+   "tok_per_s": 292.0
+  },
+  {
+   "chunk": 64,
+   "ms": 164.01,
+   "tok_per_s": 390.0
+  },
+  {
+   "chunk": 128,
+   "ms": 184.11,
+   "tok_per_s": 695.0
+  },
+  {
+   "chunk": 256,
+   "ms": 230.7,
+   "tok_per_s": 1110.0
+  },
+  {
+   "chunk": 512,
+   "ms": 374.22,
+   "tok_per_s": 1368.0
+  },
+  {
+   "chunk": 1024,
+   "ms": 646.54,
+   "tok_per_s": 1584.0
+  },
+  {
+   "chunk": 2048,
+   "ms": 1368.32,
+   "tok_per_s": 1497.0
+  }
+ ],
+ "geometry_ab_decode_steps": {
+  "1": {
+   "row": [
+    {
+     "run": 1,
+     "p50": 10.011,
+     "min": 9.75
+    },
+    {
+     "run": 2,
+     "p50": 9.883,
+     "min": 9.638
+    },
+    {
+     "run": 3,
+     "p50": 9.749,
+     "min": 9.612
+    }
+   ],
+   "task": [
+    {
+     "run": 1,
+     "p50": 9.863,
+     "min": 9.786
+    },
+    {
+     "run": 2,
+     "p50": 9.938,
+     "min": 9.826
+    },
+    {
+     "run": 3,
+     "p50": 9.942,
+     "min": 9.812
+    }
+   ]
+  },
+  "2": {
+   "row": [
+    {
+     "run": 1,
+     "p50": 14.952,
+     "min": 14.451
+    },
+    {
+     "run": 2,
+     "p50": 15.513,
+     "min": 14.641
+    },
+    {
+     "run": 3,
+     "p50": 14.778,
+     "min": 14.331
+    }
+   ],
+   "task": [
+    {
+     "run": 1,
+     "p50": 14.431,
+     "min": 14.116
+    },
+    {
+     "run": 2,
+     "p50": 14.655,
+     "min": 14.26
+    },
+    {
+     "run": 3,
+     "p50": 14.72,
+     "min": 14.337
+    }
+   ]
+  },
+  "4": {
+   "row": [
+    {
+     "run": 1,
+     "p50": 23.212,
+     "min": 22.219
+    },
+    {
+     "run": 2,
+     "p50": 28.843,
+     "min": 23.569
+    },
+    {
+     "run": 3,
+     "p50": 23.113,
+     "min": 21.936
+    }
+   ],
+   "task": [
+    {
+     "run": 1,
+     "p50": 22.817,
+     "min": 22.113
+    },
+    {
+     "run": 2,
+     "p50": 22.589,
+     "min": 21.874
+    },
+    {
+     "run": 3,
+     "p50": 22.847,
+     "min": 21.936
+    }
+   ]
+  },
+  "8": {
+   "row": [
+    {
+     "run": 1,
+     "p50": 39.745,
+     "min": 38.22
+    },
+    {
+     "run": 2,
+     "p50": 55.742,
+     "min": 44.496
+    },
+    {
+     "run": 3,
+     "p50": 39.99,
+     "min": 39.068
+    }
+   ],
+   "task": [
+    {
+     "run": 1,
+     "p50": 38.23,
+     "min": 36.67
+    },
+    {
+     "run": 2,
+     "p50": 37.164,
+     "min": 35.749
+    },
+    {
+     "run": 3,
+     "p50": 38.127,
+     "min": 36.167
+    }
+   ]
+  },
+  "16": {
+   "row": [
+    {
+     "run": 1,
+     "p50": 70.911,
+     "min": 69.434
+    },
+    {
+     "run": 2,
+     "p50": 71.469,
+     "min": 69.907
+    },
+    {
+     "run": 3,
+     "p50": 71.039,
+     "min": 69.638
+    }
+   ],
+   "task": [
+    {
+     "run": 1,
+     "p50": 66.589,
+     "min": 64.934
+    },
+    {
+     "run": 2,
+     "p50": 95.656,
+     "min": 66.666
+    },
+    {
+     "run": 3,
+     "p50": 68.167,
+     "min": 65.619
+    }
+   ]
+  },
+  "32": {
+   "row": [
+    {
+     "run": 1,
+     "p50": 122.942,
+     "min": 118.429
+    },
+    {
+     "run": 2,
+     "p50": 122.656,
+     "min": 119.37
+    },
+    {
+     "run": 3,
+     "p50": 125.826,
+     "min": 121.225
+    }
+   ],
+   "task": [
+    {
+     "run": 1,
+     "p50": 105.843,
+     "min": 102.856
+    },
+    {
+     "run": 2,
+     "p50": 151.131,
+     "min": 101.52
+    },
+    {
+     "run": 3,
+     "p50": 141.861,
+     "min": 130.456
+    }
+   ]
+  }
+ }
+}
