@@ -112,6 +112,7 @@ fn probe_reproduces_the_f8_opinion_reads_slot_bit_identically_when_warm() {
         let f8_req: AdjudicateRequest = serde_json::from_value(serde_json::json!({
             "spec": VERDICT_ONLY,
             "input": email,
+            "max_tokens": 512,
             "opinion": true
         }))
         .unwrap();

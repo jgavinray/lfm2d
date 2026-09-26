@@ -73,6 +73,7 @@ fn describe_then_read_stands_at_the_generative_paths_own_slot() {
         let generative: AdjudicateRequest = serde_json::from_value(serde_json::json!({
             "spec": SPEC,
             "input": state,
+            "max_tokens": 512,
             "distributions": {"top_k": 8}
         }))
         .unwrap();
@@ -206,7 +207,7 @@ fn describe_then_read_stands_at_the_generative_paths_own_slot() {
         // from the described state and write the report the fresh generation
         // wrote, byte for byte, decoding only what follows the slot.
         let plain: AdjudicateRequest =
-            serde_json::from_value(serde_json::json!({"spec": SPEC, "input": state})).unwrap();
+            serde_json::from_value(serde_json::json!({"spec": SPEC, "input": state, "max_tokens": 512})).unwrap();
         let resumed = adjudicator.generate(&plain, &ok).expect("resume");
         assert_eq!(
             resumed.resumed_tokens,
@@ -297,7 +298,7 @@ fn describe_then_read_stands_at_the_generative_paths_own_slot() {
         // prefill takes a different kernel schedule and is documented to
         // change the text (docs/lfm25-chunk-kernels.md; 27 of 40 rows once).
         let cold: AdjudicateRequest = serde_json::from_value(
-            serde_json::json!({"spec": SPEC, "input": state, "use_cache": false}),
+            serde_json::json!({"spec": SPEC, "input": state, "max_tokens": 512, "use_cache": false}),
         )
         .unwrap();
         let fresh = adjudicator.generate(&cold, &ok).expect("cold");

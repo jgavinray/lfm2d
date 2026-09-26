@@ -188,6 +188,7 @@ fn acts(adjudicator: &Adjudicator) -> Vec<Act> {
             serde_json::from_value(json!({
                 "spec": VERDICT_ONLY,
                 "input": "Email: Where is my parcel? The tracking page has not changed in a week.",
+                "max_tokens": 512,
                 "opinion": true,
             }))
             .unwrap(),

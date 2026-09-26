@@ -26,7 +26,9 @@ pub const GPU_ENV: &str = "LFM2D_TEST_GPU";
 /// Context budget for real 8B tests: prompt plus output. The fixtures'
 /// longest prompt (interleave's long email) is under 1k tokens; keep this
 /// at what the tests need, since the ROCm caching allocator parks memory
-/// that grows with the square of the context.
+/// that grows with the square of the context. A generate request's
+/// `max_tokens` defaults to 2048 and counts against this, so real tests
+/// name theirs (512 is ample for the fixture reports).
 pub const TEST_CONTEXT: usize = 2048;
 
 /// The GPU backend named by `LFM2D_TEST_GPU` (default `rocm`, the only
