@@ -13,9 +13,9 @@ metal = ["lfm2-encoder/metal", "candle-transformers/metal"]
 
 [dependencies]
 lfm2-encoder = { path = ".." }
-candle-transformers = { git = "https://github.com/tobert/candle", rev = "dda984e005314b1f1a8d82964b04061b0bb10301" }
-candle-core = { git = "https://github.com/tobert/candle", rev = "dda984e005314b1f1a8d82964b04061b0bb10301" }
-candle-nn = { git = "https://github.com/tobert/candle", rev = "dda984e005314b1f1a8d82964b04061b0bb10301" }
+candle-transformers = { git = "https://github.com/tobert/candle", rev = "d0735dc91b6e844dd01698fb7935c3171e5bd6bc" }
+candle-core = { git = "https://github.com/tobert/candle", rev = "d0735dc91b6e844dd01698fb7935c3171e5bd6bc" }
+candle-nn = { git = "https://github.com/tobert/candle", rev = "d0735dc91b6e844dd01698fb7935c3171e5bd6bc" }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
