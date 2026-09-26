@@ -1051,8 +1051,9 @@ kept one set of score buffers per prefill chunk: +3.4 GiB after a cold 4096
 prefill, +12.9 GiB after 8192, and a 30k prefill exhausted the 128 GB host.
 That parked memory is GTT, host RAM that the OOM killer does not count
 against the process, so it killed other pods first. A context above 8192
-needs that allocator fix (candle `6223100c`, "rocm: geometric size classes
-for allocator buckets above 64 KiB"); with it, what a prefill parks grows
+needs that allocator fix ("rocm: geometric size classes for allocator
+buckets above 64 KiB", candle `d0735dc9` in the pinned `lfm25-batch`; the
+prototype `6223100c` is the same patch); with it, what a prefill parks grows
 linearly: 2.7 GiB after 8192, 5.9 GiB after 16384, 10.8 GiB after 30000.
 
 Two things scale with the budget rather than with traffic. The caches evict

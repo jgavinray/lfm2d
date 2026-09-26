@@ -25,8 +25,10 @@ use lfm2d::device::DeviceArg;
 pub const GPU_ENV: &str = "LFM2D_TEST_GPU";
 /// Context budget for real 8B tests: prompt plus output. The fixtures'
 /// longest prompt (interleave's long email) is under 1k tokens; keep this
-/// at what the tests need, since the ROCm caching allocator parks memory
-/// that grows with the square of the context. A generate request's
+/// at what the tests need, since the ROCm caching allocator parks what a
+/// prefill frees and never returns it (linear in context since the candle
+/// pin's allocator size classes; `long_context_real.rs` is the one binary
+/// that runs at 32768). A generate request's
 /// `max_tokens` defaults to 2048 and counts against this, so real tests
 /// name theirs (512 is ample for the fixture reports).
 pub const TEST_CONTEXT: usize = 2048;
