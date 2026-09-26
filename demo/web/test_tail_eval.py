@@ -42,6 +42,22 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["mass_min"], 0.5)
 
 
+class MoveTests(unittest.TestCase):
+    def test_a_flip_is_followed_when_p_moves_the_way_the_answer_did(self):
+        before = [0.8, 0.2, 0.6, 0.5, 0.9]
+        after = [0.3, 0.7, 0.7, 0.4, 0.95]
+        fits_before = [True, False, True, False, True]
+        fits_after = [False, True, False, False, True]
+        m = tail_eval.moves(before, after, fits_before, fits_after)
+        # item 0 fell (followed), item 1 rose (followed), item 2 rose (missed)
+        self.assertEqual(m, {"flips": 3, "followed": 2, "to_fits": [1, 1], "to_breaks": [1, 2],
+                             "steady_abs_move_p50": 0.075})
+
+    def test_no_flips_is_not_a_perfect_score(self):
+        m = tail_eval.moves([0.5], [0.5], [True], [True])
+        self.assertEqual((m["flips"], m["followed"]), (0, 0))
+
+
 class PageAgreementTests(unittest.TestCase):
     def test_the_page_and_the_scorer_share_the_mass_floor(self):
         import re

@@ -82,9 +82,33 @@
   .tabs button { font-family: var(--mono); font-size: 11.5px; padding: 3px 9px; }
   .tabs button.on { border-color: var(--dim); background: #202739; }
   .tabs .k { color: var(--keep); } .tabs .m { color: var(--maybe); } .tabs .d { color: var(--drop); }
-  .item { border: 1px solid var(--line); border-left: 4px solid var(--faint); border-radius: 10px; background: var(--panel); margin: 0 0 10px; overflow: hidden; transition: opacity .3s; }
-  .item.keep { border-left-color: var(--keep); } .item.maybe { border-left-color: var(--maybe); } .item.drop { border-left-color: var(--drop); opacity: .62; }
-  .item.fresh { animation: land .6s ease-out; }
+  .item { border: 1px solid var(--line); border-left: 4px solid var(--faint); border-radius: 8px; background: var(--panel); margin: 0 0 5px; overflow: hidden; transition: opacity .3s; }
+  .item .row1 { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: 5px 10px; cursor: pointer; }
+  .item .row1 > * { flex-shrink: 0; }
+  .item .row1 > .title { flex: 1 1 60px; }
+  .item .row1:focus-visible { outline: 1px solid var(--link); }
+  .item .caret { font-family: var(--mono); font-size: 11px; color: var(--faint); width: 10px; }
+  .item .title { font-size: 13.5px; flex: 1 1 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .chips { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+  .chip { font-family: var(--mono); font-size: 10.5px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--faint); background: var(--panel2); color: var(--ink); line-height: 17px; cursor: pointer; }
+  .chip i { font-style: normal; color: var(--dim); margin-right: 1px; }
+  .chip.keep { border-color: var(--keep); } .chip.maybe { border-color: var(--maybe); } .chip.drop { border-color: var(--drop); color: var(--dim); } .chip.wait { border-style: dashed; color: var(--dim); cursor: default; }
+  .chip.sel { background: #26304a; }
+  .chip .lowm { color: var(--err); margin-left: 2px; }
+  .item .change { font-family: var(--mono); font-size: 10.5px; font-weight: 600; color: var(--link); }
+  .item.changed { box-shadow: inset 0 0 0 1px #2f5b8a; }
+  .item.changed .change::before { content: "● "; }
+  .item .flag { font-family: var(--mono); font-size: 10.5px; color: var(--err); }
+  .item .card { border-top: 1px solid var(--line); padding-bottom: 2px; }
+  .item.open { margin: 8px 0 10px; }
+  .item .desc { padding: 6px 12px 0; } .item .desc .h { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+  .item .desc div { font-size: 13px; } .item .desc b { font-family: var(--mono); font-size: 11px; color: var(--dim); font-weight: 600; }
+  .tabs .c { color: var(--link); }
+  .item.keep { border-left-color: var(--keep); } .item.maybe { border-left-color: var(--maybe); } .item.drop { border-left-color: var(--drop); }
+  .item.drop:not(.open):not(.changed) .title { color: var(--dim); }
+  .fresh { animation: land .6s ease-out; }
+  .item .anote { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+  body:not(.notes) .item .anote { display: none; }
   @keyframes land { from { transform: translateY(-8px); opacity: 0; } }
   .item .hd { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 7px 12px 0; }
   .item .from { font-family: var(--mono); font-weight: 600; font-size: 12.5px; }
@@ -121,6 +145,8 @@
     #feed { overflow: visible; }
     .opts { grid-template-columns: max-content 1fr; }
     .opts .rawcol { grid-column: 2; }
+    .item .row1 { flex-wrap: wrap; }
+    .item .row1 > .title { flex-basis: 150px; }
   }
 </style>
 </head>
@@ -163,6 +189,7 @@
       <label class="small">keep at <span id="optname1"></span> ≥ <input type="range" id="keepat" min="0" max="1" step="0.01"><output id="keepv"></output></label>
       <label class="small">drop below <input type="range" id="dropbelow" min="0" max="1" step="0.01"><output id="dropv"></output></label>
       <label class="small">sort <select id="sort"><option value="new">newest first</option><option value="p">by <span>P</span></option></select></label>
+      <label class="small" title="read every item again at each turn's checkpoint (a turn that leaves none, stopped or cut off, is not re-read); reads during a turn pause its reasoning">re-read each turn <select id="when"><option value="end">when it ends</option><option value="mid">as your message lands</option><option value="off">off</option></select></label>
       <div class="tabs" id="tabs"></div>
     </div>
     <div id="feed"><p class="empty">Nothing yet: the agents answer once you've told the model what you want.</p></div>
@@ -204,8 +231,8 @@ const pct = p => p >= 0.9995 ? ">99.9%" : p < 0.0005 ? "<0.1%" : (100 * p).toFix
 async function api(path, body, raw, signal) {
   const init = body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: raw ? body : JSON.stringify(body), signal };
   const r = await fetch("/api" + path, init);
-  const j = await r.json().catch(() => ({ error: { message: "non-JSON answer" } }));
-  if (!r.ok) throw failure(r.status, j.error?.message ?? JSON.stringify(j));
+  const j = await r.json().catch(() => null);
+  if (!r.ok || !j) throw failure(r.status, j?.error?.message ?? (j ? JSON.stringify(j) : "unreadable answer body"));
   return j;
 }
 const failure = (status, message) => Object.assign(new Error(`${status} ${message}`), { status, detail: message });
@@ -249,14 +276,17 @@ const S = {
   turns: [], current: null, ctrl: null,
   items: [], queue: [], inflight: 0, timers: [], feedT0: null, tab: "all", raf: 0,
   feedCtrl: null,      // aborts the reads of a feed that was replaced (new chat, scenario, replay)
+  rounds: [],          // the checkpoints the feed was read against, in order
+  when: "end",         // when every item is re-read: "end" of each turn, "mid" as the user's message lands, or "off"
+  readLog: [],         // every finished read, for the timeline and the per-turn cost
 };
 
 // The tail a read forks right now: the running turn's checkpoint_user once
 // its prefill is done (mid-turn), else the end of the last finished turn.
 function tail() {
   const c = S.current;
-  if (c && c.cpUser) return { id: c.cpUser, where: `after your message in turn ${c.n}`, mid: true };
-  if (S.from) { const t = S.turns.findLast(t => t.cp === S.from); return { id: S.from, where: `after the assistant's turn ${t?.n ?? "?"}`, mid: false }; }
+  if (c && c.cpUser) return { id: c.cpUser, where: `after your message in turn ${c.n}`, mid: true, turn: c.n };
+  if (S.from) { const t = S.turns.findLast(t => t.cp === S.from); return { id: S.from, where: `after the assistant's turn ${t?.n ?? "?"}`, mid: false, turn: t?.n ?? "?" }; }
   return null;
 }
 
@@ -285,7 +315,7 @@ function scenarioPicked() {
 function newChat() {
   if (S.ctrl) S.ctrl.abort();
   stopFeed();
-  Object.assign(S, { from: null, started: false, turns: [], current: null, ctrl: null, items: [], queue: [], feedT0: null });
+  Object.assign(S, { from: null, started: false, turns: [], current: null, ctrl: null, items: [], queue: [], rounds: [], readLog: [], feedT0: null });
   $("send").disabled = false; $("stop").disabled = true; $("replay").disabled = true; $("reread").disabled = true;
   $("log").replaceChildren(el("p", "empty", "New chat. Send the opening instruction."));
   $("feed").replaceChildren(el("p", "empty", "Nothing yet: the agents answer once you've told the model what you want."));
@@ -375,6 +405,7 @@ async function send() {
         $("chatstatus").textContent = `turn ${turn.n}: reasoning — System 1 reads your message's tail meanwhile`;
         metaLine(turn); feedStatus();
         if (S.feedT0 === null && S.sc.menu) startFeed();   // the agents answer once there is a request to answer
+        else if (S.when === "mid") { turn.midRound = true; newRound(`your message in turn ${turn.n}`); }
       } else if (event === "token") {
         turn.text += data.text; turn.tokens++;
         if (turn.tThinkEnd === null && turn.text.includes("</think>")) turn.tThinkEnd = now();
@@ -397,9 +428,17 @@ async function send() {
     if (turn.tThinkEnd === null && turn.done?.content != null) turn.tThinkEnd = turn.tDone;
     turn.cp = turn.done?.checkpoint ?? null;
     paintTurn(turn);
+    // What the opinion reads cost this turn: every read that ran while it did
+    // paused it at a token (reads go first, docs/integration.md invariant 15).
+    const during = S.readLog.concat(S.items.map(it => it.pending).filter(Boolean)).filter(rd => rd.t0 < turn.tDone && (rd.t1 ?? now()) > turn.t0);
+    turn.readsDuring = during.length;
     if (turn.done?.checkpoint) {
-      S.from = turn.done.checkpoint; metaLine(turn);
+      S.from = turn.done.checkpoint; metaLine(turn, ` · ${during.length} opinion reads ran during it`);
       $("chatstatus").textContent = `turn ${turn.n} done in ${secs(turn.tDone - turn.t0)}`;
+      if (turn.n === 1 && !$("msg").value.trim() && S.sc.follow_up) {
+        $("msg").value = S.sc.follow_up;
+        $("chatstatus").textContent += " · a suggested follow-up that changes what you asked for is in the box: send it to watch the feed move";
+      }
     } else {
       // No checkpoint after this turn (cut off, stopped or failed): the next
       // turn continues from the last one that finished.
@@ -411,8 +450,9 @@ async function send() {
       else if (!S.from) S.started = false, $("system").disabled = false;
     }
     $("send").disabled = false; $("stop").disabled = true;
+    if (turn.done?.checkpoint && S.when === "end") newRound(`the end of turn ${turn.n}`);
     for (const it of S.items) paintItem(it);
-    feedStatus(); scrollLog();
+    feedStatus(); scrollLog(); pump();
   }
 }
 
@@ -424,11 +464,26 @@ function schedulePaint(turn) {
 const nearBottom = () => { const l = $("log"); return l.scrollHeight - l.scrollTop - l.clientHeight < 80; };
 function scrollLog(force) { const l = $("log"); if (force === undefined || force) l.scrollTop = l.scrollHeight; }
 
-// ---------- the feed: simulated agents, one opinion read per item ----------
+// ---------- the feed: simulated agents, one opinion read per item per round ----------
+// A round is one checkpoint the feed was read against: `T2` is the user's
+// message in turn 2 (read while the model reasons), `T2✓` the end of the
+// assistant's turn 2, `no chat` the spec's own prompt. An item keeps one read
+// per round, so its row shows how it moved as the chat went on.
+function roundOf(t) {
+  const key = t ? t.id : "none";
+  let r = S.rounds.find(r => r.key === key);
+  if (!r) {
+    r = { key, order: S.rounds.length, label: t ? `T${t.turn}${t.mid ? "" : "✓"}` : "no chat",
+          title: t ? t.where : "without the chat: the spec's own prompt" };
+    S.rounds.push(r);
+  }
+  return r;
+}
+
 function startFeed() {
   stopFeed();
   S.feedCtrl = new AbortController();
-  S.items = []; S.queue = []; S.feedT0 = now();
+  S.items = []; S.queue = []; S.rounds = []; S.feedT0 = now();
   $("feed").replaceChildren();
   S.sc.items.forEach((src, i) => S.timers.push(setTimeout(() => arrive(src, i), src.at * 1000)));
   $("replay").disabled = false; $("reread").disabled = false;
@@ -445,22 +500,41 @@ function canRead() {
 }
 
 function arrive(src, i) {
-  const it = { src, i, tArrive: now(), read: null, reads: 0, bin: "wait" };
+  const it = { src, i, tArrive: now(), hist: new Map(), pending: null, reads: 0, open: false, sel: null };
   S.items.push(it);
-  $("feed").prepend(itemView(it)); it.view.c.classList.add("fresh");
-  enqueue(it); render(); feedStatus();
+  $("feed").prepend(itemView(it)); it.view.row.classList.add("fresh");
+  it.view.row.addEventListener("animationend", () => it.view.row.classList.remove("fresh"), { once: true });
+  enqueue(it, "first"); render(); feedStatus();
 }
 
-function enqueue(it) { if (!S.queue.includes(it)) S.queue.push(it); pump(); }
+// A new round re-reads every item. Queued reads for an older round are
+// dropped (the new one supersedes them); reads already in flight land in
+// their own round's slot.
+function newRound(why) {
+  if (!S.items.length || !S.sc?.menu) return;
+  S.queue = [];
+  for (const it of S.items) enqueue(it, "reread");
+  S.lastRound = { why, t: now() };
+  feedStatus();
+}
+
+function enqueue(it, kind) { if (!S.queue.some(q => q.it === it)) S.queue.push({ it, kind }); pump(); }
+// With "when the turn ends", a re-read never runs while a turn generates (it
+// would pause the reasoning, and the end of the turn re-reads anyway); an
+// item's first read always runs, at whatever tail is freshest.
 function pump() {
-  while (S.inflight < CONCURRENT_READS && S.queue.length) readItem(S.queue.shift());
+  const hold = S.when === "end" && S.current;
+  for (let k = 0; S.inflight < CONCURRENT_READS && k < S.queue.length;) {
+    if (hold && S.queue[k].kind === "reread") { k++; continue; }
+    readItem(S.queue.splice(k, 1)[0].it);
+  }
 }
 
 async function readItem(it) {
   S.inflight++;
   const signal = S.feedCtrl?.signal;
-  const t = $("noctx").checked ? null : tail(), race = S.current;
-  const rd = { tail: t, race, t0: now(), t1: null, firedAt: race?.tokens ?? null, answeredAt: null, n: ++it.reads };
+  const t = $("noctx").checked ? null : tail(), race = S.current, round = roundOf(t);
+  const rd = { tail: t, round, race, t0: now(), t1: null, firedAt: race?.tokens ?? null, answeredAt: null, n: ++it.reads };
   it.pending = rd; paintItem(it); tick();
   const body = { spec: S.sc.menu.id, state: { input: it.src.text }, questions: [{ field: S.sc.judge.field }], use_cache: true, timeout_ms: 120000 };
   if (t) body.context = { checkpoint: t.id };
@@ -469,63 +543,115 @@ async function readItem(it) {
   rd.t1 = now();
   if (race) { rd.answeredAt = race.tokens; rd.mid = !race.tDone; }
   S.inflight--;
-  // Only the item's latest read lands: a re-read queued behind an older read of
-  // the same item supersedes it, and a replaced feed's reads land nowhere.
-  if (S.items.includes(it) && it.pending === rd) { it.read = rd; it.pending = null; paintItem(it, true); render(); }
-  feedStatus(); pump();
+  S.readLog.push(rd);
+  // A replaced feed's reads land nowhere. Within a feed a read fills its
+  // round's slot unless a newer dispatch for that round already did (reads of
+  // one checkpoint are identical, but their timings are their own); an error
+  // only fills an empty slot. Only the item's latest dispatch clears "reading".
+  try {
+    if (S.items.includes(it) && !(signal?.aborted)) {
+      const held = it.hist.get(round.key);
+      if (rd.error ? !held : !held || held.error || held.t0 <= rd.t0) it.hist.set(round.key, rd);
+      if (it.pending === rd) it.pending = null;
+      paintItem(it); render(); paintTimeline();
+    }
+  } finally { feedStatus(); pump(); }
 }
 
 // The filter: one option's prob against the user's thresholds, and never on a
 // read whose raw mass says the question was not really put.
 function pKeep(rd) { return rd?.r?.answers[0].options.find(o => o.option === S.sc.judge.keep)?.prob; }
-function binOf(it) {
-  const rd = it.read;
-  if (!rd || rd.error) return "wait";
-  const a = rd.r.answers[0], p = pKeep(rd);
-  if (Math.exp(a.sequence_mass) < MIN_MASS) return "maybe";
-  const keepAt = +$("keepat").value, dropBelow = +$("dropbelow").value;
-  return p >= keepAt ? "keep" : p < dropBelow ? "drop" : "maybe";
+function massOf(rd) { return rd?.r ? Math.exp(rd.r.answers[0].sequence_mass) : null; }
+function binOfRead(rd) {
+  if (!rd || rd.error || !rd.r) return "wait";
+  const p = pKeep(rd);
+  if (p === undefined || massOf(rd) < MIN_MASS) return "maybe";
+  return p >= +$("keepat").value ? "keep" : p < +$("dropbelow").value ? "drop" : "maybe";
+}
+// An item's reads, one per round, in the order they were dispatched; the
+// current one is the newest that answered (a newer failure is flagged, not binned).
+function history(it) { return [...it.hist.values()].sort((a, b) => a.t0 - b.t0); }
+function latest(it) { const h = history(it); return h.filter(rd => rd.r).at(-1) ?? h.at(-1) ?? null; }
+function binOf(it) { return binOfRead(latest(it)); }
+function changeOf(it) {
+  const h = history(it).filter(rd => rd.r);
+  if (h.length < 2) return null;
+  const [a, b] = [binOfRead(h.at(-2)), binOfRead(h.at(-1))];
+  return a === b ? null : { from: a, to: b, fromRound: h.at(-2).round.label, toRound: h.at(-1).round.label };
 }
 
 function itemView(it) {
   const c = el("div", "item");
-  const hd = el("div", "hd"), bin = el("span", "bin wait", "reading"), clk = el("span", "clk");
-  hd.append(el("span", "from", it.src.from), bin, clk);
-  const text = el("div", "text", it.src.text), tag = el("div", "tag");
-  const author = el("div", "author");
-  author.append(el("b", null, it.src.fits ? "author: fits · " : it.src.chat_only ? "author: breaks what you asked · " : "author: breaks · "), it.src.note);
-  const body = el("div");
-  c.append(hd, text, author, tag, body);
-  it.view = { c, bin, clk, tag, body };
+  const row = el("div", "row1"); row.tabIndex = 0;
+  const caret = el("span", "caret", "▸"), from = el("span", "from", it.src.from), title = el("span", "title", it.src.title);
+  const chips = el("span", "chips"), change = el("span", "change"), flag = el("span", "flag"), bin = el("span", "bin wait", "reading");
+  const mark = f => f ? "fits" : "breaks";
+  const anote = el("span", "anote", `author: ${mark(it.src.fits)} → ${mark(it.src.fits_after_follow_up)}`);
+  anote.title = "the author's answer as first asked, then after the suggested follow-up";
+  row.append(caret, from, title, chips, change, flag, anote, bin);
+  row.onclick = () => { it.open = !it.open; paintItem(it); };
+  row.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); row.onclick(); } };
+  const card = el("div", "card"); card.hidden = true;
+  c.append(row, card);
+  it.view = { c, row, caret, chips, change, flag, bin, card };
   return c;
 }
 
-function paintItem(it, full) {
+function chip(it, rd) {
+  const b = binOfRead(rd), p = pKeep(rd), m = massOf(rd);
+  const k = el("button", `chip ${rd.error ? "wait" : b}` + (it.open && (it.sel ?? latest(it)?.round.key) === rd.round.key ? " sel" : ""));
+  k.append(el("i", null, rd.round.label), rd.error ? " err" : p === undefined ? " –" : " " + Math.round(100 * p));
+  if (m !== null && m < MIN_MASS) k.append(el("span", "lowm", "⚠"));
+  k.title = `${rd.round.title}: ${rd.error ? rd.error : `P(${S.sc.judge.keep}) ${pct(p)}, raw mass ${pct(m)}, ${b}`}`;
+  k.onclick = e => { e.stopPropagation(); it.open = true; it.sel = rd.round.key; paintItem(it); };
+  return k;
+}
+
+function paintItem(it) {
   const v = it.view;
   if (!v) return;
-  const rd = it.pending ?? it.read;
-  it.bin = binOf(it);
-  v.c.className = "item " + (it.bin === "wait" ? "" : it.bin);
-  if (it.pending) { v.bin.className = "bin wait"; v.bin.textContent = it.read ? "re-reading" : "reading"; }
-  else if (it.read?.error) { v.bin.className = "bin wait"; v.bin.textContent = "error · not binned"; }
-  else if (it.read) { const p = pKeep(it.read); v.bin.className = "bin " + it.bin; v.bin.textContent = p === undefined ? `${it.bin} · no ${S.sc.judge.keep} option` : `${it.bin} · ${pct(p)}`; }
-  v.clk.textContent = !rd ? "queued" : rd.t1 ? secs(rd.t1 - rd.t0) : `reading… ${secs(now() - rd.t0)}`;
-  v.tag.textContent = "";
-  if (rd) {
-    v.tag.append(rd.tail ? `read against the tail ${rd.tail.where} ` : "read without the chat (the spec's own prompt)");
-    if (rd.tail) v.tag.append(el("span", "cp", short(rd.tail.id)));
-    if (rd.race && rd.t1 && rd.mid) v.tag.append(" · ", el("span", "mid", `answered while turn ${rd.race.n} was still generating (tokens ${rd.firedAt}→${rd.answeredAt}; the chat paused for it)`));
-    else if (rd.race && !rd.t1) v.tag.append(" · ", el("span", "mid", `fired at token ${rd.firedAt} of turn ${rd.race.n}`));
-  }
-  if (!full) return;
-  v.body.replaceChildren();
-  const r = it.read;
-  if (r.error) { v.body.append(el("div", "err", r.error)); return; }
-  const res = r.r;
+  const h = history(it), cur = latest(it), b = binOfRead(cur), ch = changeOf(it), failedLast = h.at(-1)?.error && cur !== h.at(-1);
+  v.c.className = "item " + (b === "wait" ? "" : b) + (ch ? " changed" : "") + (it.open ? " open" : "");
+  v.caret.textContent = it.open ? "▾" : "▸";
+  v.chips.replaceChildren(...h.map(rd => chip(it, rd)));
+  if (it.pending) { const k = el("span", "chip wait"); k.append(el("i", null, it.pending.round.label), " …"); v.chips.append(k); }
+  v.change.textContent = ch ? `${ch.from} → ${ch.to}` : "";
+  v.change.title = ch ? `the bin changed between ${ch.fromRound} and ${ch.toRound}` : "";
+  const m = massOf(cur);
+  v.flag.textContent = (m !== null && m < MIN_MASS ? "⚠ mass " : "") + (failedLast ? "⚠ last read failed" : "");
+  v.flag.title = (m !== null && m < MIN_MASS ? `only ${pct(m)} of the raw probability on the answer set: not really asked, never kept or dropped. ` : "") +
+                 (failedLast ? `the ${h.at(-1).round.label} read failed; the bin is from ${cur.round.label}` : "");
+  if (!cur) { v.bin.className = "bin wait"; v.bin.textContent = "reading"; }
+  else if (cur.error) { v.bin.className = "bin wait"; v.bin.textContent = "error"; }
+  else { const p = pKeep(cur); v.bin.className = "bin " + b; v.bin.textContent = p === undefined ? `${b} · no ${S.sc.judge.keep}` : `${b} · ${pct(p)}`; }
+  v.card.hidden = !it.open;
+  if (it.open) paintCard(it);
+}
+
+// The expanded card: the full read for the selected round (the latest by default).
+function paintCard(it) {
+  const card = it.view.card; card.replaceChildren();
+  const h = history(it), rd = (it.sel && it.hist.get(it.sel)) || it.pending && !h.length && it.pending || latest(it);
+  card.append(el("div", "text", it.src.text));
+  const author = el("div", "author");
+  author.append(el("b", null, `as first asked: ${it.src.fits ? "fits" : "breaks"} · `), it.src.note, el("br"),
+                el("b", null, `after the suggested follow-up: ${it.src.fits_after_follow_up ? "fits" : "breaks"} · `), it.src.note_after_follow_up);
+  card.append(author);
+  if (!rd) return;
+  const tag = el("div", "tag");
+  tag.append(`${rd.round.label}: read against ` + (rd.tail ? `the tail ${rd.tail.where} ` : "the spec's own prompt (no chat)"));
+  if (rd.tail) tag.append(el("span", "cp", short(rd.tail.id)));
+  if (rd.race && rd.t1 && rd.mid) tag.append(" · ", el("span", "mid", `answered while turn ${rd.race.n} was still generating (tokens ${rd.firedAt}→${rd.answeredAt}; the chat paused for it)`));
+  else if (rd.race && !rd.t1) tag.append(" · ", el("span", "mid", `fired at token ${rd.firedAt} of turn ${rd.race.n}`));
+  if (!rd.t1) tag.append(` · reading… ${secs(now() - rd.t0)}`);
+  card.append(tag);
+  if (!rd.t1) return;
+  if (rd.error) { card.append(el("div", "err", rd.error)); return; }
+  const res = rd.r;
   if (res.described.length) {
-    const d = el("details", "desc"); d.append(el("summary", null, `what System 1 wrote first: ${res.described.map(f => f.field).join(", ")}`));
+    const d = el("div", "desc"); d.append(el("div", "h", "what System 1 wrote first"));
     for (const f of res.described) { const row = el("div"); row.append(el("b", null, f.field + " "), typeof f.value === "string" ? f.value : JSON.stringify(f.value)); d.append(row); }
-    v.body.append(d);
+    card.append(d);
   }
   for (const a of res.answers) {
     const box = el("div", "ans"), f = el("div", "f"), mass = Math.exp(a.sequence_mass);
@@ -536,28 +662,31 @@ function paintItem(it, full) {
       const raw = Math.exp(o.logprob);
       g.append(el("span", null, o.option), meter("prob", o.prob, pct(o.prob)), meter("raw rawcol", raw, `${pct(raw)} · ${o.logprob.toFixed(2)}`));
     }
-    box.append(f, g); v.body.append(box);
+    box.append(f, g); card.append(box);
   }
   const ft = el("div", "ft");
-  ft.append("queue ", el("b", null, secs(res.queue_ms)), " · prefill ", el("b", null, secs(res.prefill_ms)), " · describe ", el("b", null, secs(res.describe_ms)),
-            " · read ", el("b", null, secs(res.read_ms)), ` · ${res.prompt_tokens} prompt tokens (${res.cached_tokens} resident) · cache ${res.cache.prefix}/${res.cache.state}/${res.cache.described}` +
-            (it.reads > 1 ? ` · read ${it.reads} times` : ""));
-  v.body.append(ft);
+  ft.append(`${secs(rd.t1 - rd.t0)} wall · queue `, el("b", null, secs(res.queue_ms)), " · prefill ", el("b", null, secs(res.prefill_ms)), " · describe ", el("b", null, secs(res.describe_ms)),
+            " · read ", el("b", null, secs(res.read_ms)), ` · ${res.prompt_tokens} prompt tokens (${res.cached_tokens} resident) · cache ${res.cache.prefix}/${res.cache.state}/${res.cache.described}`);
+  card.append(ft);
 }
 function meter(cls, p, label) { const m = el("div", "meter " + cls), s = el("span"); s.style.width = (100 * Math.max(0, Math.min(1, p))).toFixed(2) + "%"; m.append(s, el("em", null, label)); return m; }
 
 // Tabs, counts and order: nothing is re-read, the thresholds only re-bin.
 function render() {
-  for (const it of S.items) { const was = it.bin; it.bin = binOf(it); if (was !== it.bin) paintItem(it); }
-  const count = b => S.items.filter(it => it.bin === b).length;
-  const tabs = [["all", "all", S.items.length, ""], ["keep", "kept", count("keep"), "k"], ["maybe", "maybe", count("maybe"), "m"], ["drop", "dropped", count("drop"), "d"]];
+  for (const it of S.items) paintItem(it);
+  const count = b => S.items.filter(it => binOf(it) === b).length, changed = S.items.filter(changeOf).length;
+  const tabs = [["all", "all", S.items.length, ""], ["keep", "kept", count("keep"), "k"], ["maybe", "maybe", count("maybe"), "m"],
+                ["drop", "dropped", count("drop"), "d"], ["changed", "changed", changed, "c"]];
   $("tabs").replaceChildren(...tabs.map(([key, label, n, cls]) => {
     const b = el("button", S.tab === key ? "on" : ""); b.append(el("span", cls, label), ` ${n}`); b.onclick = () => { S.tab = key; render(); }; return b;
   }));
   const order = [...S.items].sort($("sort").value === "p"
-    ? (a, b) => (pKeep(b.read) ?? -1) - (pKeep(a.read) ?? -1)
+    ? (a, b) => (pKeep(latest(b)) ?? -1) - (pKeep(latest(a)) ?? -1)
     : (a, b) => b.tArrive - a.tArrive);
-  for (const it of order) { it.view.c.hidden = S.tab !== "all" && it.bin !== S.tab; $("feed").append(it.view.c); }
+  // Move rows only when the order changed: moving a node restarts its animations.
+  const feed = $("feed"), want = order.map(it => it.view.c);
+  if (want.some((c, k) => feed.children[k] !== c)) feed.replaceChildren(...want);
+  for (const it of order) it.view.c.hidden = S.tab === "changed" ? !changeOf(it) : S.tab !== "all" && binOf(it) !== S.tab;
   const kept = count("keep");
   $("handoff").disabled = !kept || !!S.current || !S.from;
   $("handoff").textContent = `hand the ${kept} kept to the chat`;
@@ -574,19 +703,20 @@ function feedStatus() {
   if (S.sc?.error) { box.append(el("span", "errline", `this scenario cannot run: ${S.sc.error}`)); return; }
   if (!S.sc?.menu) return;
   if (S.feedT0 === null) { box.append(S.current ? "the agents answer once the model has read your message…" : "the agents answer once you've told the model what you want"); return; }
-  const read = S.items.filter(it => it.read).length, waiting = S.queue.length + S.inflight;
-  box.append(`${S.items.length} of ${S.sc.items.length} arrived · ${read} read` + (waiting ? ` · ${waiting} in the read queue` : ""));
+  const waiting = S.queue.length + S.inflight, held = S.when === "end" && S.current && S.queue.some(q => q.kind === "reread");
+  box.append(`${S.items.length} of ${S.sc.items.length} arrived · rounds ${S.rounds.map(r => r.label).join(" ") || "—"}` +
+             (waiting ? ` · ${waiting} in the read queue` + (held ? " (re-reads wait for the turn to end)" : "") : ""));
   const t = $("noctx").checked ? null : tail();
-  box.append(" · reading against: ", t ? t.where + " " : "no chat");
+  box.append(" · next read against: ", t ? t.where + " " : "no chat");
   if (t) box.append(el("span", "cp", short(t.id)));
   if (t?.mid) box.append(" ", el("span", "live", "(mid-turn)"));
   render();
 }
 
-function reread() { if (!canRead()) return; for (const it of S.items) enqueue(it); feedStatus(); }
+function reread() { if (!canRead()) return; S.queue = []; for (const it of S.items) enqueue(it, "first"); feedStatus(); }
 
 function handoff() {
-  const kept = S.items.filter(it => it.bin === "keep").sort((a, b) => a.tArrive - b.tArrive);
+  const kept = S.items.filter(it => binOf(it) === "keep").sort((a, b) => a.tArrive - b.tArrive);
   if (!kept.length) return;
   const label = S.sc.menu.input_label;
   $("msg").value = `${S.sc.handoff}\n\n` + kept.map((it, k) => `${label} ${k + 1}, from ${it.src.from}: ${it.src.text}`).join("\n");
@@ -599,7 +729,7 @@ function paintTimeline() {
   const turn = S.current ?? S.turns.at(-1) ?? null;
   const box = $("timeline");
   if (!turn) { box.replaceChildren(); return; }
-  const reads = S.items.flatMap(it => [it.read, it.pending]).filter(rd => rd && rd.t0 >= turn.t0 && (!turn.tDone || rd.t0 <= turn.tDone));
+  const reads = S.readLog.concat(S.items.map(it => it.pending).filter(Boolean)).filter(rd => (rd.t1 ?? now()) > turn.t0 && (!turn.tDone || rd.t0 <= turn.tDone));
   const t0 = turn.t0, end = Math.max(turn.tDone ?? now(), ...reads.map(r => r.t1 ?? now())), span = Math.max(end - t0, 1);
   const x = t => (100 * (t - t0) / span).toFixed(2) + "%", w = (a, b) => (100 * Math.max(b - a, 0) / span).toFixed(2) + "%";
   const seg = (cls, a, b) => { const s = el("div", "seg " + cls); s.style.left = x(a); s.style.width = w(a, b); return s; };
@@ -621,8 +751,8 @@ function paintTimeline() {
 function tick() {
   if (S.raf) return;
   const loop = () => {
-    paintTimeline();
-    for (const it of S.items) if (it.pending) paintItem(it);
+    if (S.current) paintTimeline();
+    for (const it of S.items) if (it.pending && it.open) paintItem(it);
     const busy = S.current || S.inflight || S.queue.length || S.timers.length && S.items.length < (S.sc?.items.length ?? 0);
     S.raf = busy ? requestAnimationFrame(loop) : 0;
   };
@@ -662,6 +792,13 @@ $("handoff").onclick = handoff;
 $("keepat").oninput = thresholds;
 $("dropbelow").oninput = thresholds;
 $("sort").onchange = render;
+$("when").onchange = () => {
+  S.when = $("when").value;
+  // Switched to "as your message lands" after this turn's message landed: its round starts now.
+  const c = S.current;
+  if (S.when === "mid" && c?.cpUser && !c.midRound && S.feedT0 !== null) { c.midRound = true; newRound(`your message in turn ${c.n}`); }
+  pump(); feedStatus();
+};
 $("noctx").onchange = feedStatus;
 $("notes").onchange = () => document.body.classList.toggle("notes", $("notes").checked);
 $("msg").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
