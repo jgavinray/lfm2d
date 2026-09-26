@@ -50,7 +50,7 @@ fn tool_schema_is_part_of_the_frozen_system_prompt() {
         input_label: "Input".into(),
         system: "Judge.".into(),
         output_schema: None,
-        tools: vec![serde_json::json!({"type":"function","function":{"name":"report_analysis"}})],
+        tools: vec![serde_json::from_str(r#"{"type":"function","function":{"name":"report_analysis"}}"#).unwrap()],
         reasoning: Reasoning::default(),
         opinion: None,
     };

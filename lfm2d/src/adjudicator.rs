@@ -61,8 +61,12 @@ pub struct PromptSpec {
     /// ([`PromptSpec::render_prefix`]).
     pub input_label: String,
     pub system: String,
+    /// Tool schemas, listed in the system turn as the template's `tojson`
+    /// writes them: document key order, `", "` and `": "`. A
+    /// [`crate::chat::TemplateValue`] and not a `serde_json::Value`, which
+    /// would sort the keys.
     #[serde(default)]
-    pub tools: Vec<serde_json::Value>,
+    pub tools: Vec<crate::chat::TemplateValue>,
     #[serde(default)]
     pub output_schema: Option<serde_json::Value>,
     /// Whether the assistant's turn opens with a finished reasoning region.
@@ -131,8 +135,8 @@ pub fn validate_text(s: &str) -> Result<(), String> {
     if s.trim().is_empty() {
         return Err("input must not be empty".into());
     }
-    if s.contains("<|") || s.contains("<think>") || s.contains("</think>") {
-        return Err("literal model control tokens are not allowed in prompt content".into());
+    if let Some(marker) = crate::chat::control_marker_in(s) {
+        return Err(format!("literal model control tokens ({marker:?}) are not allowed in prompt content"));
     }
     Ok(())
 }
@@ -160,23 +164,17 @@ impl PromptSpec {
             system.push_str("\nReturn exactly one JSON object matching this schema: ");
             system.push_str(&schema);
         }
-        if !self.tools.is_empty() {
-            let mut rendered = Vec::new();
-            for tool in &self.tools {
-                if tool["type"] != "function" || !tool["function"]["name"].is_string() {
-                    return Err("each tool must be a named function schema".into());
-                }
-                let json = serde_json::to_string(tool).map_err(|e| e.to_string())?;
-                validate_text(&json)?;
-                rendered.push(json);
+        use crate::chat::TemplateValue;
+        for tool in &self.tools {
+            let named = matches!(tool.get("function").and_then(|f| f.get("name")), Some(TemplateValue::Str(_)));
+            if tool.get("type") != Some(&TemplateValue::Str("function".into())) || !named {
+                return Err("each tool must be a named function schema".into());
             }
-            system.push_str("\nList of tools: [");
-            system.push_str(&rendered.join(", "));
-            system.push(']');
         }
-        Ok(format!(
-            "<|startoftext|><|im_start|>system\n{system}<|im_end|>\n"
-        ))
+        // The chat renderer's head, so the tool list is the template's bytes.
+        // `system` is never empty here (validate_text), so a system turn is
+        // always written.
+        crate::chat::render_head(&system, &self.tools)
     }
 
     /// The label must render as exactly one `label:` line: a newline or a
@@ -193,7 +191,7 @@ impl PromptSpec {
         if label.contains(':') {
             return Err("input_label must not contain a colon; the renderer writes the one after it".into());
         }
-        if label.contains("<|") || label.contains("<think>") || label.contains("</think>") {
+        if crate::chat::control_marker_in(label).is_some() {
             return Err("input_label must not carry model control tokens".into());
         }
         if label.len() > MAX_INPUT_LABEL_BYTES {
@@ -214,10 +212,16 @@ impl PromptSpec {
     /// mode is part of the version a consumer reads beside every
     /// `/v1/adjudicate` response, and part of the prefix snapshot's identity. v1 was `closed`'s bytes
     /// without the reasoning region.
+    ///
+    /// v3 (2026-09-26) lists tools as the template's `tojson` writes them;
+    /// v2 wrote them compact and key-sorted. A spec without tools renders the
+    /// same bytes under both, so it keeps v2 and its `snapshot_id`.
     pub fn template_version(&self) -> &'static str {
-        match self.reasoning {
-            Reasoning::Closed => "lfm25-single-user-v2-closed",
-            Reasoning::Open => "lfm25-single-user-v2-open",
+        match (self.reasoning, self.tools.is_empty()) {
+            (Reasoning::Closed, true) => "lfm25-single-user-v2-closed",
+            (Reasoning::Open, true) => "lfm25-single-user-v2-open",
+            (Reasoning::Closed, false) => "lfm25-single-user-v3-closed",
+            (Reasoning::Open, false) => "lfm25-single-user-v3-open",
         }
     }
 

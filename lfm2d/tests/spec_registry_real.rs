@@ -30,13 +30,13 @@ use lfm2d::opinion_api::OpinionRequest;
 fn cli() -> Cli {
     let model = std::env::var("LFM2D_ADJUDICATOR_MODEL").unwrap_or_else(|_| {
         let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").trim_end_matches("/lfm2d"))
+            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
         });
         format!("{models}/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf")
     });
     let tokenizer = std::env::var("LFM2D_ADJUDICATOR_TOKENIZER").unwrap_or_else(|_| {
         let models = std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-            format!("{}/.models", env!("CARGO_MANIFEST_DIR").trim_end_matches("/lfm2d"))
+            format!("{}/.models", env!("CARGO_MANIFEST_DIR").strip_suffix("/lfm2d").expect("the crate is <repo>/lfm2d"))
         });
         format!("{models}/LFM2.5-8B-A1B/tokenizer.json")
     });

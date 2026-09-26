@@ -71,7 +71,7 @@ impl OpinionState {
     fn validate(&self) -> Result<(), String> {
         validate_text(&self.input).map_err(|e| format!("state.input: {e}"))?;
         if let Some(facts) = &self.facts
-            && (facts.contains("<|") || facts.contains("<think>") || facts.contains("</think>"))
+            && crate::chat::control_marker_in(facts).is_some()
         {
             return Err("state.facts: literal model control tokens are not allowed".into());
         }

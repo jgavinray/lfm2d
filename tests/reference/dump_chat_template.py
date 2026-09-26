@@ -87,7 +87,10 @@ MIXED_ARGS = {
     'limit': 3,
     'negative': -42,
     'huge': 18446744073709551615,
+    # serde_json's default float parser reads the next two an ulp off;
+    # lfm2d turns on its `float_roundtrip`.
     'score_floor': 0.30000000000000004,
+    'misread_by_default': 6.02e-23,
     'tiny': 1e-05,
     'small': 0.0001,
     'large': 1e16,
@@ -118,6 +121,21 @@ def chats():
                 {'role': 'user', 'content': 'And doubled?'},
                 {'role': 'assistant', 'content': '8.'},
                 {'role': 'user', 'content': 'Thanks.'},
+            ],
+        }),
+        # An explicit empty system message renders nothing, exactly as no
+        # system message does; whitespace alone is a system prompt.
+        ('empty_system_message', {
+            'system': '',
+            'messages': [
+                {'role': 'user', 'content': 'Hello.'},
+                {'role': 'assistant', 'content': 'Hi.'},
+            ],
+        }),
+        ('whitespace_only_system', {
+            'system': ' ',
+            'messages': [
+                {'role': 'user', 'content': 'Hello.'},
             ],
         }),
         ('no_system_message', {

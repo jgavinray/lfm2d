@@ -303,6 +303,14 @@ async fn refused_opinion_requests_never_enter_the_generator() {
             r#"{"spec":"email-triage-v1","state":{"input":"x","facts":"<think>"},"questions":[{"field":"verdict"}]}"#,
         ),
         (
+            "image token in input",
+            r#"{"spec":"email-triage-v1","state":{"input":"a <image> b"},"questions":[{"field":"verdict"}]}"#,
+        ),
+        (
+            "image token in facts",
+            r#"{"spec":"email-triage-v1","state":{"input":"x","facts":"a <image> b"},"questions":[{"field":"verdict"}]}"#,
+        ),
+        (
             // Renamed, not aliased: an old caller learns, it is not guessed at.
             "the old command key",
             r#"{"spec":"email-triage-v1","state":{"command":"x"},"questions":[{"field":"verdict"}]}"#,

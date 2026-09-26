@@ -56,7 +56,7 @@ impl OpinionSpec {
             return Err("opinion.close must not be empty".into());
         }
         for text in [&self.prefill, &self.close].into_iter().chain(&self.options) {
-            if text.contains("<|") || text.contains("<think>") || text.contains("</think>") {
+            if crate::chat::control_marker_in(text).is_some() {
                 return Err("opinion text must not carry model control tokens".into());
             }
         }

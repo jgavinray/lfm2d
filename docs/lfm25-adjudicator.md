@@ -140,7 +140,10 @@ a default.
 
 `template_version` carries the mode (`lfm25-single-user-v2-closed`), and each
 spec's `snapshot_id` is computed from it, so a consumer sees the template
-change rather than inferring it.
+change rather than inferring it. A spec with `tools` reads `v3` (2026-09-26):
+its tools are listed as the template's own `tojson` writes them, through
+`lfm2d::chat`, where `v2` wrote them compact and key-sorted. Specs without
+tools render the same bytes and keep `v2`.
 
 ```bash
 curl --fail-with-body 'http://127.0.0.1:18152/v1/adjudicate' \

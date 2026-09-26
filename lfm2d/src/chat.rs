@@ -22,8 +22,9 @@
 //! Content carries no model control tokens; the renderer supplies them, and
 //! refuses (never escapes) text that would forge one.
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, SeqAccess, Visitor},
+    ser::{self, SerializeMap},
 };
 use std::fmt;
 
@@ -37,13 +38,21 @@ pub const TURN_END: &str = "<|im_end|>\n";
 /// the template does. See the module docs.
 pub const AFTER_EOS: &str = "\n";
 /// transformers' `continue_final_message` sentinel. The template strips it from
-/// an assistant's content and writes it back after the tool calls; content
-/// ending with it is refused rather than reproduced.
+/// the end of an assistant's content and writes it back after the tool calls;
+/// assistant content carrying it anywhere (with or without the space) is
+/// refused rather than reproduced.
 pub const CONTINUE_FINAL_MESSAGE_TAG: &str = "CONTINUE_FINAL_MESSAGE_TAG ";
 
-/// Substrings that would tokenize as model control tokens. Every special token
-/// in the tokenizer starts with `<|` except these three.
-const CONTROL_MARKERS: [&str; 4] = ["<|", "<think>", "</think>", "<image>"];
+/// Substrings that would tokenize as model control tokens. Every added token in
+/// the tokenizer starts with `<|` except the other three, which
+/// `tests/chat_template.rs` checks against the real tokenizer.
+pub const CONTROL_MARKERS: [&str; 4] = ["<|", "<think>", "</think>", "<image>"];
+
+/// The first of [`CONTROL_MARKERS`] that `text` carries. Every check on text
+/// bound for a prompt goes through this, so the list has one home.
+pub fn control_marker_in(text: &str) -> Option<&'static str> {
+    CONTROL_MARKERS.into_iter().find(|m| text.contains(m))
+}
 
 /// A chat: the system prompt, the tools the system turn lists, and the turns
 /// after it. An empty system prompt with no tools renders no system turn.
@@ -127,11 +136,9 @@ impl TryFrom<WireToolCall> for ToolCall {
 /// Deserialize it from request text, never through `serde_json::Value`, which
 /// sorts object keys and would reorder every argument.
 ///
-/// Two places the parse can still differ from Python's: an integer beyond
-/// `u64` reaches us as a float (Python keeps it an int), and serde_json's
-/// default float parser (no `float_roundtrip`) is not guaranteed correctly
-/// rounded for long mantissas, so a float could render one ulp away. The
-/// fixtures' 17-digit `0.30000000000000004` round-trips.
+/// A number is refused where our parse could differ from Python's
+/// ([`check_float`]). The visitor sees only the parsed `f64`, never the text,
+/// so that rule is stated on the value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TemplateValue {
     Null,
@@ -141,6 +148,41 @@ pub enum TemplateValue {
     Str(String),
     List(Vec<TemplateValue>),
     Map(Vec<(String, TemplateValue)>),
+}
+
+impl TemplateValue {
+    /// A map's value under `key`; `None` for a missing key or a non-map.
+    pub fn get(&self, key: &str) -> Option<&TemplateValue> {
+        match self {
+            TemplateValue::Map(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+}
+
+/// Writes the value back as JSON, keys in their own order.
+impl Serialize for TemplateValue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            TemplateValue::Null => serializer.serialize_unit(),
+            TemplateValue::Bool(b) => serializer.serialize_bool(*b),
+            TemplateValue::Int(i) => match (i64::try_from(*i), u64::try_from(*i)) {
+                (Ok(i), _) => serializer.serialize_i64(i),
+                (_, Ok(u)) => serializer.serialize_u64(u),
+                _ => Err(ser::Error::custom("an integer beyond 64 bits")),
+            },
+            TemplateValue::Float(f) => serializer.serialize_f64(*f),
+            TemplateValue::Str(s) => serializer.serialize_str(s),
+            TemplateValue::List(items) => items.serialize(serializer),
+            TemplateValue::Map(entries) => {
+                let mut map = serializer.serialize_map(Some(entries.len()))?;
+                for (k, v) in entries {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for TemplateValue {
@@ -167,9 +209,7 @@ impl<'de> Deserialize<'de> for TemplateValue {
                 Ok(TemplateValue::Int(v.into()))
             }
             fn visit_f64<E: de::Error>(self, v: f64) -> Result<TemplateValue, E> {
-                if !v.is_finite() {
-                    return Err(E::custom("numbers must be finite"));
-                }
+                check_float(v).map_err(E::custom)?;
                 Ok(TemplateValue::Float(v))
             }
             fn visit_str<E>(self, v: &str) -> Result<TemplateValue, E> {
@@ -222,7 +262,7 @@ pub fn render_head(system: &str, tools: &[TemplateValue]) -> Result<String, Stri
 
 /// [`render_head`] over tools already rendered to text: the template's
 /// `ns.system_prompt` assembly.
-pub(crate) fn head_with_rendered_tools(system: &str, tools: &[String]) -> Result<String, String> {
+fn head_with_rendered_tools(system: &str, tools: &[String]) -> Result<String, String> {
     refuse_control("the system prompt", system)?;
     let mut prompt = system.to_owned();
     if !tools.is_empty() {
@@ -267,9 +307,9 @@ impl Message {
                 }
                 if let Some(content) = content {
                     refuse_control("an assistant's content", content)?;
-                    if content.ends_with(CONTINUE_FINAL_MESSAGE_TAG) {
+                    if content.contains(CONTINUE_FINAL_MESSAGE_TAG.trim_end()) {
                         return Err(format!(
-                            "assistant content must not end with {CONTINUE_FINAL_MESSAGE_TAG:?}: the \
+                            "assistant content must not carry {CONTINUE_FINAL_MESSAGE_TAG:?}: the \
                              template moves it after the tool calls"
                         ));
                     }
@@ -325,7 +365,7 @@ impl ToolCall {
 }
 
 fn refuse_control(what: &str, text: &str) -> Result<(), String> {
-    match CONTROL_MARKERS.iter().find(|m| text.contains(*m)) {
+    match control_marker_in(text) {
         Some(marker) => Err(format!(
             "{what} carries {marker:?}, a model control token; the renderer writes those"
         )),
@@ -478,15 +518,47 @@ fn py_str_repr(s: &str, out: &mut String) -> Result<(), String> {
     Ok(())
 }
 
+/// The shortest round-tripping decimal digits of `|f|` and the exponent of the
+/// first: `|f| = d.ddd × 10^exponent`.
+fn shortest_digits(f: f64) -> (String, i32) {
+    let sci = format!("{:e}", f.abs());
+    let (mantissa, exponent) = sci.split_once('e').expect("`{:e}` always writes an exponent");
+    let digits = mantissa.chars().filter(|c| *c != '.').collect();
+    (digits, exponent.parse().expect("`{:e}` writes an integer exponent"))
+}
+
+/// Floats whose parse could differ from Python's `json.loads`, refused: a
+/// whole number at or beyond 2^64 (or at or below -2^63). An integer written
+/// there overflows serde_json's `u64`/`i64` and arrives as a float, where
+/// Python keeps an int (`100000000000000000000`, not `1e+20`), and from the
+/// value alone the two cannot be told apart.
+///
+/// Every other float is read exactly: the crate turns on serde_json's
+/// `float_roundtrip`, whose parse is correctly rounded as Python's is. Without
+/// it serde_json computes `D as f64` and one multiply or divide by `10^e`, off
+/// by an ulp past `D > 2^53` or `|e| > 22` (it read `6.02e-23` as
+/// `6.019999999999999e-23`); `tests/chat_template.rs` holds the parse to
+/// Rust's own, which is exact, over a sample of doubles.
+fn check_float(f: f64) -> Result<(), String> {
+    if !f.is_finite() {
+        return Err("a float must be finite".into());
+    }
+    if f.fract() == 0.0 && (f >= 18446744073709551616.0 || f <= -9223372036854775808.0) {
+        return Err(format!(
+            "the float {} is a whole number beyond 64-bit integers, where an integer arrives as a \
+             float too, so which one Python would render is unknown",
+            py_float_repr(f)
+        ));
+    }
+    Ok(())
+}
+
 /// Python's `float.__repr__`: the shortest digits that round-trip (as Rust
 /// finds them too), positional when the decimal point falls within
 /// `-4 < decpt <= 16`, otherwise `d.ddde±XX` with at least two exponent digits;
 /// a whole number keeps `.0`.
 fn py_float_repr(f: f64) -> String {
-    let sci = format!("{:e}", f.abs());
-    let (mantissa, exponent) = sci.split_once('e').expect("`{:e}` always writes an exponent");
-    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
-    let exponent: i32 = exponent.parse().expect("`{:e}` writes an integer exponent");
+    let (digits, exponent) = shortest_digits(f);
     let decpt = exponent + 1;
     let n = digits.len() as i32;
     let mut out = String::new();
@@ -585,21 +657,19 @@ mod tests {
     }
 
     #[test]
-    fn a_tools_spec_single_turn_prompt_is_a_system_and_user_chat_given_its_tool_text() {
-        // `PromptSpec` writes each tool with `serde_json::to_string`, compact
-        // and key-sorted, where the template's `tojson` writes `", "`/`": "`
-        // in document order (`tests/chat_template.rs` pins that divergence).
-        // Given the same tool text, everything around it is the same bytes.
+    fn a_tools_spec_single_turn_prompt_is_a_system_and_user_chat() {
         let mut p: PromptSpec =
             serde_json::from_str(include_str!("../tests/fixtures/specs/email-triage-tools-v1.json")).unwrap();
         assert!(p.output_schema.is_none() && !p.tools.is_empty());
         for reasoning in [Reasoning::Open, Reasoning::Closed] {
             p.reasoning = reasoning;
-            let tools: Vec<String> = p.tools.iter().map(|t| serde_json::to_string(t).unwrap()).collect();
-            let head = head_with_rendered_tools(&p.system, &tools).unwrap();
-            let user = Message::User { content: INPUT.into() }.render().unwrap();
+            let chat = Chat {
+                system: p.system.clone(),
+                tools: p.tools.clone(),
+                messages: vec![Message::User { content: INPUT.into() }],
+            };
             assert_eq!(
-                format!("{head}{user}{GENERATION_PROMPT}{}", opening(reasoning)),
+                chat.render(true).unwrap() + opening(reasoning),
                 p.render_prefix().unwrap() + &p.render_user_turn(INPUT),
                 "{reasoning:?}"
             );

@@ -22,7 +22,11 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "io-util", "time"] }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip`: a correctly rounded float parse, as Python's is. The
+# default parser can land an ulp or two off past 15-16 digits or |e| > 22,
+# and `chat` renders tool-call floats back to the model (see
+# `chat::check_float`). Crate-wide: every serde_json float parse here.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 clap = { version = "4", features = ["derive", "env"] }
 
