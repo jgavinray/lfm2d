@@ -114,6 +114,7 @@ CLI flags, each with an env-var fallback (`clap`'s `env` feature):
 | `--opinion-spec-capacity` | `LFM2D_OPINION_SPEC_CAPACITY` | How many uploaded specs stay resident (LRU), default `8`; boot specs don't count and are never evicted |
 | `--no-probe` | `LFM2D_PROBE` (`0` disables) | Removes `/v1/probe`; `/v1/opinion` and `/v1/adjudicate` are unaffected |
 | `--chat-checkpoint-budget-mib` | `LFM2D_CHAT_CHECKPOINT_BUDGET_MIB` | Memory for chat checkpoints (`/v1/chat`, tail reads), default `16384`; least recently used evicted first; must hold a turn's two checkpoints at the full context |
+| `--state-cache-budget-mib` | `LFM2D_STATE_CACHE_BUDGET_MIB` | Memory for every cached model state (ready prompts, described states, chat tail prefixes), default `16384`; least recently used evicted first across specs; the per-spec counts still apply inside it; must hold one full-context state |
 
 Standard OTEL env vars also apply (`OTEL_EXPORTER_OTLP_ENDPOINT`,
 `OTEL_SERVICE_NAME` default `lfm2d`, ...) — see "Observability" below; none

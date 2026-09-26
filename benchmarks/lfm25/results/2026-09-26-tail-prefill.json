@@ -1,0 +1,102 @@
+{
+ "date": "2026-09-26",
+ "scope": "Tail-read latency on a described-cache miss, forwarding the spec head itself (direct, cache.prefix \"checkpoint\") vs starting after a held tail prefix that background prefill made (cache.prefix \"tail\"). benchmarks/lfm25/tail_prefill.py against one daemon built from chat-tail 4dc5588, spec demo/specs/email-triage-v2.json, --device rocm --threads 8 --adjudicator-context 4096, default budgets.",
+ "conditions": "zorak gfx1151, under the zorak-heavy lock and a MemAvailable >= 8 GiB guard. Resident on the GPU during the run: the live lfm2d pod (mostly idle), a kaiseki torch process holding 68 GB, and another agent's lfm2d-tail daemon (idle as far as seen); MemAvailable ~31 GiB. Six scenario chats, two streamed turns each, n = 12 per class. Direct reads ran mid-turn at the checkpoint event (served at the generation's pauses); prefix reads after 3 s idle on the assistant checkpoint, whose chat carries the assistant turn, so they read longer prompts (p50 1215 vs 560 tokens). Background prefill of the 304-token head took 530-590 ms per checkpoint (daemon log).",
+ "spec": "email-triage-v2",
+ "identity": {
+  "model_id": "LFM2.5-8B-A1B-Q5_K_M",
+  "weight_hash": "eb8bd10148ea21e195502d6d6a205983ba40815302068ce72eb160684df92b3e",
+  "tokenizer_hash": "695be7802a0e4b8a81048f0ff5ebb7fc811a0ba5a6be63dbb24deb5a81096f41",
+  "context_limit": 4096,
+  "backend": "rocm",
+  "device": "rocm:gfx1151:hip7.2",
+  "candle_rev": "dda984e005314b1f1a8d82964b04061b0bb10301",
+  "dtype": "f32",
+  "sampling": "greedy; repetition_penalty=1.05; history=full"
+ },
+ "idle_s": 3.0,
+ "chats": [
+  {
+   "chat": "inbox_helper",
+   "turns": 2
+  },
+  {
+   "chat": "home_lab",
+   "turns": 2
+  },
+  {
+   "chat": "trip_planning",
+   "turns": 2
+  },
+  {
+   "chat": "garden",
+   "turns": 2
+  },
+  {
+   "chat": "bakery",
+   "turns": 2
+  },
+  {
+   "chat": "bike_shop",
+   "turns": 2
+  }
+ ],
+ "rows_by_where_and_prefix": {
+  "checkpoint_user, mid-turn -> checkpoint": 12,
+  "checkpoint_user, mid-turn -> tail": 0,
+  "checkpoint, after idle -> checkpoint": 0,
+  "checkpoint, after idle -> tail": 12
+ },
+ "direct": {
+  "wall_ms": {
+   "n": 12,
+   "p50": 1274.2368244798854,
+   "p90": 1355.0617339788005,
+   "max": 1570.6704409967642
+  },
+  "prefill_ms": {
+   "n": 12,
+   "p50": 710.0209775000001,
+   "p90": 846.561123,
+   "max": 869.241194
+  },
+  "describe_ms": {
+   "n": 12,
+   "p50": 402.7671775,
+   "p90": 455.389002,
+   "max": 587.950536
+  },
+  "prompt_tokens": {
+   "n": 12,
+   "p50": 559.5,
+   "p90": 1071,
+   "max": 1272
+  }
+ },
+ "from_prefix": {
+  "wall_ms": {
+   "n": 12,
+   "p50": 652.8711689898046,
+   "p90": 725.9719419816975,
+   "max": 740.8454510150477
+  },
+  "prefill_ms": {
+   "n": 12,
+   "p50": 126.5271925,
+   "p90": 148.50236999999998,
+   "max": 162.527963
+  },
+  "describe_ms": {
+   "n": 12,
+   "p50": 402.1796985,
+   "p90": 444.680583,
+   "max": 457.892945
+  },
+  "prompt_tokens": {
+   "n": 12,
+   "p50": 1215.5,
+   "p90": 1486,
+   "max": 1892
+  }
+ }
+}

@@ -5,8 +5,10 @@ lasting parts move into `docs/lfm25-adjudicator.md` and `docs/integration.md`.
 
 Landed: piece 1 (interleaving worker, `docs/integration.md` invariant 15),
 piece 2 (the renderer, `lfm2d/src/chat.rs`)
-and pieces 3–5 (`POST /v1/chat`, checkpoints, tail reads; invariants 16–17,
-`docs/lfm25-adjudicator.md` "Chat sessions and tail reads").
+pieces 3–5 (`POST /v1/chat`, checkpoints, tail reads; invariants 16–17,
+`docs/lfm25-adjudicator.md` "Chat sessions and tail reads") and piece 6
+(byte-bounded state caches, tail prefixes and background prefill; "State
+memory" and "Tail prefixes and background prefill" there).
 
 ## What we are building
 
