@@ -149,7 +149,8 @@ pub struct Cli {
     /// Execution backend. Auto tries compiled GPU backends (ROCm, CUDA,
     /// Metal), then CPU if device initialization is unavailable. Explicit
     /// backends fail instead of falling back. Model-load and inference errors
-    /// are never retried on another device.
+    /// are never retried on another device. The adjudicator refuses auto
+    /// resolving to CPU (its CPU MoE is a reference); name `cpu` for that.
     #[arg(long, env = "LFM2D_DEVICE", default_value = "auto")]
     pub device: crate::device::DeviceArg,
 

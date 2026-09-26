@@ -948,6 +948,7 @@ impl Checkpoint {
         for reason in &execution.selection_reasons {
             eprintln!("lfm2d adjudicator device: {reason}");
         }
+        crate::device::refuse_implicit_cpu(device, execution.backend, "the LFM2.5 MoE adjudicator")?;
         let model =
             Model::from_gguf(ct, &mut file, &execution.device).map_err(|e| e.to_string())?;
         let model_id = path

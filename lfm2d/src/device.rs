@@ -52,6 +52,21 @@ fn select_with(
     Ok((DeviceArg::Cpu, reasons))
 }
 
+/// For a checkpoint whose CPU path is a reference, never a fallback (the
+/// LFM2.5 MoE: every expert dequantized to f32, ~29 GB, then memory and time
+/// linear in tokens): `auto` landing on CPU is refused. An explicit
+/// `--device cpu` is the reference run and stays allowed.
+pub fn refuse_implicit_cpu(requested: DeviceArg, selected: DeviceArg, what: &str) -> Result<(), String> {
+    if requested == DeviceArg::Auto && selected == DeviceArg::Cpu {
+        return Err(format!(
+            "--device auto resolved to CPU for {what}; its CPU path is a reference, not a fallback \
+             (~29 GB of f32 experts, then memory and time linear in tokens). Fix the GPU backend, \
+             or pass --device cpu explicitly for a reference run"
+        ));
+    }
+    Ok(())
+}
+
 /// The device used by all heads. Never replaced after model loading starts.
 pub struct ExecutionDevice {
     pub device: Device,
@@ -178,6 +193,17 @@ mod tests {
         let (selected, errors) = select_with(DeviceArg::Auto, &[], |_| unreachable!()).unwrap();
         assert_eq!(selected, DeviceArg::Cpu);
         assert!(errors[0].contains("no GPU backend compiled"));
+    }
+
+    #[test]
+    fn a_moe_checkpoint_refuses_auto_resolving_to_cpu() {
+        let error = refuse_implicit_cpu(DeviceArg::Auto, DeviceArg::Cpu, "the adjudicator").unwrap_err();
+        assert!(error.contains("--device cpu"), "{error}");
+        assert!(error.contains("the adjudicator"), "{error}");
+        // An explicit CPU is the reference path; a GPU is the point.
+        assert!(refuse_implicit_cpu(DeviceArg::Cpu, DeviceArg::Cpu, "x").is_ok());
+        assert!(refuse_implicit_cpu(DeviceArg::Auto, DeviceArg::Rocm, "x").is_ok());
+        assert!(refuse_implicit_cpu(DeviceArg::Rocm, DeviceArg::Rocm, "x").is_ok());
     }
 
     #[test]

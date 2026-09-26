@@ -46,6 +46,9 @@ device initialization is unavailable. Every failed probe/reason is logged,
 and execution metadata reports the **selected** backend. Use `--device cpu`
 to force CPU or `--device rocm` (etc.) to require a GPU; an explicit GPU never
 falls back. `--device-index` selects the backend's device ordinal.
+The LFM2.5-8B-A1B adjudicator is the exception to `auto`'s CPU step: its CPU
+MoE is a reference (~29 GB of f32 experts, then linear in tokens), so `auto`
+resolving to CPU refuses to load it; pass `--device cpu` for a reference run.
 
 Fallback is startup-only: checkpoint/configuration errors, model smoke-test
 failures, and inference failures remain errors, without retrying on CPU.
