@@ -214,7 +214,7 @@ the first that needs them.
 Requests accept `input`, `max_tokens` (default/max 2048), `timeout_ms`
 (default 30000, max 120000), `use_cache` (default true), `distributions` and
 `opinion` (both below). `use_cache:false` explicitly measures a cold prefill. Prompt plus output must fit the server's
-context budget (default 4096, range 128–8192). Inputs are at most 66560 bytes: `/v1/opinion`'s 64 KiB state plus 1 KiB of headroom for what the opinion render adds around it (the `input_label` itself is capped at 64 bytes), so an escalation always fits.
+context budget (default 4096, range 128–32768; see "Context budget"). Inputs are at most 66560 bytes: `/v1/opinion`'s 64 KiB state plus 1 KiB of headroom for what the opinion render adds around it (the `input_label` itself is capped at 64 bytes), so an escalation always fits.
 Bad requests return 400; overload 503; deadlines 504; cancellation 408;
 inference failures 500. Deadline time includes queueing.
 
@@ -869,6 +869,44 @@ before it, same test. Cold (`use_cache: false`) is
 reported the same way regardless of schedule: measured, never asserted
 equal to warm, exactly because production is always warm and a cold probe
 answers a genuinely different question.
+
+## Context budget
+
+`--adjudicator-context` accepts 128–32768 tokens (the GGUF declares 128000).
+Chat keeps preserved reasoning in its history, which fills 4096 tokens within
+a few turns. Attention is eager: each 128-token prefill chunk materializes
+`32 heads x 128 x kv_len` f32 scores, 480 MiB at 30k, and decode reads the
+whole K/V for every token. What a deep context costs on gfx1151, cold
+prefill from an empty state straight on the model, host otherwise idle
+(2026-09-26, candle with allocator size classes):
+
+| depth | prefill | decode | peak GPU (model 6.4 GiB) | one state's K/V |
+|---:|---:|---:|---:|---:|
+| 128 | 0.2 s | 94–105 tok/s | 6.6 GiB | 3 MiB |
+| 8192 | 13.4 s (613 tok/s) | 68 tok/s | 9.3 GiB | 192 MiB |
+| 16384 | 31 s (529 tok/s) | 50 tok/s | 12.4 GiB | 384 MiB |
+| 30000 | 71 s (423 tok/s) | 34 tok/s | 17.4 GiB | 768 MiB |
+
+n=2 at 128–16384 and n=1 at 30000; 128 decoded tokens per depth. A state's
+K/V is 24 KiB per token (6 attention layers x K and V x 8 heads x 64 x f32)
+at the power-of-two capacity the K/V allocator rounds to, so any state past
+16384 tokens holds 768 MiB.
+
+Before the candle allocator used size classes, the ROCm caching allocator
+kept one set of score buffers per prefill chunk: +3.4 GiB after a cold 4096
+prefill, +12.9 GiB after 8192, and a 30k prefill exhausted the 128 GB host.
+That parked memory is GTT, host RAM that the OOM killer does not count
+against the process, so it killed other pods first. A context above 8192
+needs that allocator fix (candle `6223100c`, "rocm: geometric size classes
+for allocator buckets above 64 KiB"); with it, what a prefill parks grows
+linearly: 2.7 GiB after 8192, 5.9 GiB after 16384, 10.8 GiB after 30000.
+
+Two things scale with the budget rather than with traffic. The caches evict
+by entry count, not bytes: 16 described states per spec plus one ready
+prompt, each up to 768 MiB for a long read. And `/v1/probe` `ids` are capped
+by the context only, not by bytes, so one request can prefill the whole
+budget. A cold opinion read with a 64 KiB `facts` block is about 18k tokens
+and 36 s, over the default 30 s `timeout_ms`.
 
 ## Snapshot semantics
 

@@ -39,7 +39,11 @@ pub struct Cli {
     /// Matching Hugging Face tokenizer.json (checked against GGUF vocabulary).
     #[arg(long, env="LFM2D_ADJUDICATOR_TOKENIZER")]
     pub adjudicator_tokenizer: Option<PathBuf>,
-    /// Adjudicator context budget, including output. The initial eager attention path is capped at 8192.
+    /// Adjudicator context budget in tokens, including output: 128..=32768.
+    /// Attention is eager (the score matrix is materialized) but prefill
+    /// runs in 128-token chunks, so its transient is 128 x context per
+    /// head, not context squared; one cached state at 32768 holds 768 MiB
+    /// of f32 K/V (docs/lfm25-adjudicator.md, "Context budget").
     #[arg(long, default_value_t=4096)]
     pub adjudicator_context: usize,
     /// Sign-aware repetition penalty over the full prompt and generated tokens.
@@ -256,8 +260,8 @@ impl Cli {
         if self.adjudicator_model.is_some() != self.adjudicator_tokenizer.is_some() {
             return Err("--adjudicator-model and --adjudicator-tokenizer must be supplied together".into());
         }
-        if self.adjudicator_model.is_some() && (!matches!(self.dtype, DtypeArg::F32) || !(128..=8192).contains(&self.adjudicator_context)) {
-            return Err("adjudicator requires --dtype f32 and --adjudicator-context 128..=8192".into());
+        if self.adjudicator_model.is_some() && (!matches!(self.dtype, DtypeArg::F32) || !(128..=32768).contains(&self.adjudicator_context)) {
+            return Err("adjudicator requires --dtype f32 and --adjudicator-context 128..=32768".into());
         }
         if !self.opinion_specs.is_empty() && self.adjudicator_model.is_none() {
             return Err("--opinion-spec needs the adjudicator (--adjudicator-model/--adjudicator-tokenizer)".into());
@@ -461,6 +465,21 @@ mod tests {
         };
         let err = cli.validate().expect_err("a spec with no model to serve it");
         assert!(err.contains("--opinion-spec"), "{err}");
+    }
+
+    #[test]
+    fn adjudicator_context_accepts_128_through_32768() {
+        for ok in [128, 4096, 8192, 8193, 32768] {
+            Cli { adjudicator_context: ok, ..adjudicator_only() }
+                .validate()
+                .unwrap_or_else(|e| panic!("--adjudicator-context {ok} must be accepted: {e}"));
+        }
+        for bad in [0, 127, 32769, 65536] {
+            let err = Cli { adjudicator_context: bad, ..adjudicator_only() }
+                .validate()
+                .expect_err("outside 128..=32768 must be refused");
+            assert!(err.contains("128..=32768"), "{bad}: {err}");
+        }
     }
 
     #[test]
