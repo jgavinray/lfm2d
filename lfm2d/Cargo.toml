@@ -44,6 +44,10 @@ rayon = "1"
 # `sync_channel` it replaces. Already in the tree's crossbeam family.
 crossbeam-channel = "0.5"
 
+# `POST /v1/chat`'s server-sent events: a tokio mpsc receiver as the
+# `Stream` axum's `Sse` takes. Already in the tree through tonic.
+tokio-stream = "0.1"
+
 # --- tracing + OTLP export (metrics + traces + logs) ---
 # Amy's explicit preference over bare Prometheus: one pipe for all three
 # signals. rustls everywhere (never openssl); the capture server this was

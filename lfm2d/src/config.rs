@@ -62,6 +62,14 @@ pub struct Cli {
     /// evicted and don't count against this.
     #[arg(long = "opinion-spec-capacity", env = "LFM2D_OPINION_SPEC_CAPACITY", default_value_t = 8)]
     pub opinion_spec_capacity: usize,
+    /// Memory for chat checkpoints (`POST /v1/chat` turns, which opinion
+    /// reads fork through `context`), in MiB. Past it, the least recently
+    /// used checkpoint is evicted and a request naming it gets a 404. Each
+    /// checkpoint is charged an upper bound on its state (KV rounded up as
+    /// the allocator rounds it), so the store holds at least what this
+    /// says. Must hold one checkpoint at the full adjudicator context.
+    #[arg(long = "chat-checkpoint-budget-mib", env = "LFM2D_CHAT_CHECKPOINT_BUDGET_MIB", default_value_t = 16384)]
+    pub chat_checkpoint_budget_mib: usize,
 
     /// Directory holding an `Lfm2Embedding`-shaped checkpoint
     /// (`config.json`, `tokenizer.json`, `model.safetensors`). Backs
@@ -297,6 +305,7 @@ mod tests {
             adjudicator_repeat_penalty: 1.05,
             opinion_specs: Vec::new(),
             opinion_spec_capacity: 8,
+            chat_checkpoint_budget_mib: 16384,
             embedder_dir: None,
             router_dir: None,
             token_classifier_dir: Vec::new(),
@@ -344,6 +353,7 @@ mod tests {
             adjudicator_repeat_penalty: 1.05,
             opinion_specs: Vec::new(),
             opinion_spec_capacity: 8,
+            chat_checkpoint_budget_mib: 16384,
             embedder_dir: Some("/tmp/e".into()),
             router_dir: Some("/tmp/r".into()),
             token_classifier_dir: vec!["/tmp/t".into()],

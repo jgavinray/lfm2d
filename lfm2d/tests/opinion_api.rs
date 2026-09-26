@@ -122,6 +122,7 @@ impl Generator for Fake {
         Ok(OpinionResponse {
             prefix: info(),
             spec: request.spec.clone(),
+            context: request.context.clone(),
             described: last
                 .describe
                 .iter()

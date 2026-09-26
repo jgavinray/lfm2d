@@ -125,6 +125,7 @@ impl Generator for Fake {
         Ok(OpinionResponse {
             prefix: info(),
             spec: request.spec.clone(),
+            context: request.context.clone(),
             described: vec![],
             answers: vec![lfm2d::opinion_api::Answer {
                 field: question.field.clone(),
