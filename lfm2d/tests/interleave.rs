@@ -137,6 +137,7 @@ impl Generator for Stub {
         Ok(OpinionResponse {
             prefix: info(),
             spec: request.spec.clone(),
+            context: request.context.clone(),
             described: vec![],
             answers: questions
                 .iter()

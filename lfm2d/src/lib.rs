@@ -71,6 +71,7 @@
 
 pub mod adjudicator;
 pub mod chat;
+pub mod chat_session;
 pub mod chunk_sweep;
 pub mod config;
 pub mod constrain;

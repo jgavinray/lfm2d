@@ -122,6 +122,7 @@ impl Generator for Fake {
         Ok(OpinionResponse {
             prefix: info(),
             spec: request.spec.clone(),
+            context: request.context.clone(),
             described: last
                 .describe
                 .iter()
@@ -286,7 +287,7 @@ async fn refused_opinion_requests_never_enter_the_generator() {
             r#"{"spec":"email-triage-v1","state":{"input":"x"},"questions":[]}"#,
         ),
         (
-            "context is reserved",
+            "context names a checkpoint and nothing else",
             r#"{"spec":"email-triage-v1","state":{"input":"x"},"context":{"cwd":"/"},"questions":[{"field":"verdict"}]}"#,
         ),
         (

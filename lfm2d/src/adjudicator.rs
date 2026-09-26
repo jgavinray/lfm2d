@@ -452,8 +452,11 @@ impl From<candle_core::Error> for Failure {
         Self::Internal(e.to_string())
     }
 }
-impl IntoResponse for Failure {
-    fn into_response(self) -> Response {
+impl Failure {
+    /// The status and the `{"error": {"type", "message"}}` body every
+    /// refusal answers with; a streaming chat sends the same body in its
+    /// `error` event.
+    fn parts(self) -> (StatusCode, serde_json::Value) {
         let (status, kind, msg) = match self {
             Self::BadRequest(s) => (StatusCode::BAD_REQUEST, "bad_request", s),
             Self::NotFound(s) => (StatusCode::NOT_FOUND, "not_found", s),
@@ -471,11 +474,13 @@ impl IntoResponse for Failure {
                 "evaluation deadline exceeded".into(),
             ),
         };
-        (
-            status,
-            Json(serde_json::json!({"error":{"type":kind,"message":msg}})),
-        )
-            .into_response()
+        (status, serde_json::json!({"error":{"type":kind,"message":msg}}))
+    }
+}
+impl IntoResponse for Failure {
+    fn into_response(self) -> Response {
+        let (status, body) = self.parts();
+        (status, Json(body)).into_response()
     }
 }
 
@@ -563,6 +568,19 @@ pub trait Generator: Send + 'static {
         request: &crate::probe_api::ProbeRequest,
         check: &dyn Fn() -> Result<(), Failure>,
     ) -> Result<crate::probe_api::ProbeResponse, Failure>;
+    /// `POST /v1/chat`: append turns and generate the assistant's, pausing
+    /// like [`Generator::generate`] (the same [`YieldPoint`] rule holds).
+    /// `events` carries a streaming caller's progress. Only the real engine
+    /// chats; a test double that never serves `/v1/chat` need not.
+    fn chat(
+        &mut self,
+        request: &crate::chat_session::ChatRequest,
+        events: &dyn Fn(crate::chat_session::ChatEvent),
+        at: &dyn YieldPoint<Self>,
+    ) -> Result<crate::chat_session::ChatResponse, Failure> {
+        let _ = (request, events, at);
+        Err(Failure::Internal("this generator does not chat".into()))
+    }
 }
 
 /// `POST /v1/opinion/specs`'s result: the spec's own menu entry, whether
@@ -635,6 +653,37 @@ fn forward_chunks(
         logits = Some(model.forward(chunk, state)?);
     }
     logits.ok_or_else(|| Failure::Internal("no suffix tokens".into()))
+}
+
+/// The canonical prefill schedule for rendered segments: each segment in
+/// [`CHUNK`]-sized chunks from its OWN first token, never a chunk spanning
+/// two segments. What makes a chat checkpoint's state a function of its ids
+/// (`crate::chat_session`): starting a chat with turns A and B, and
+/// continuing after A with B, forward exactly the same chunks. Empty
+/// segments are refused (they would have no logits).
+fn forward_segments(
+    model: &Model,
+    state: &mut ModelState,
+    segments: &[&[u32]],
+    between: &mut dyn FnMut() -> Result<(), Failure>,
+) -> Result<Tensor, Failure> {
+    let mut logits = None;
+    for segment in segments {
+        if segment.is_empty() {
+            return Err(Failure::Internal("an empty segment has nothing to forward".into()));
+        }
+        logits = Some(forward_chunks(model, state, segment, CHUNK, between)?);
+    }
+    logits.ok_or_else(|| Failure::Internal("no segments to forward".into()))
+}
+
+/// At least the most bytes any one token decodes to: the vocabulary's
+/// longest entry in UTF-8 (a byte-level entry spells each byte as one
+/// character of one or two UTF-8 bytes; an added token decodes to its own
+/// text). Bounds a checkpoint's text before it exists, for the startup
+/// budget check.
+fn max_token_bytes(tokenizer: &tokenizers::Tokenizer) -> usize {
+    tokenizer.get_vocab(true).keys().map(String::len).max().unwrap_or(0)
 }
 
 /// Resolve `/v1/probe`'s `decode_from` (a byte offset into the rendered
@@ -883,6 +932,67 @@ pub struct Checkpoint {
     pub tokenizer_hash: String,
     pub weight_dtypes: Vec<String>,
     pub execution: crate::device::ExecutionDevice,
+    pub state_size: StateSize,
+}
+/// What one model state costs, read off the GGUF: the byte accounting of the
+/// chat checkpoint store (`crate::chat_session`). An upper bound, never an
+/// estimate that could come in low.
+#[derive(Clone, Copy, Debug)]
+pub struct StateSize {
+    /// K and V (f32, the dtype the model computes in) over every attention
+    /// layer's KV heads, per position.
+    pub kv_bytes_per_token: usize,
+    /// Every convolution layer's state, at most `hidden` × `l_cache` f32s.
+    pub conv_bytes: usize,
+    /// The model's own context: the KV allocator never rounds past it.
+    pub context: usize,
+}
+impl StateSize {
+    fn from_gguf(ct: &gguf_file::Content) -> Result<Self, String> {
+        let number = |key: &str| -> Result<usize, String> {
+            ct.metadata
+                .get(&format!("lfm2moe.{key}"))
+                .ok_or_else(|| format!("GGUF has no lfm2moe.{key}"))?
+                .to_u32()
+                .map(|v| v as usize)
+                .map_err(|e| e.to_string())
+        };
+        let hidden = number("embedding_length")?;
+        let heads = number("attention.head_count")?;
+        let l_cache = number("shortconv.l_cache")?;
+        let context = number("context_length")?;
+        let kv: Vec<usize> = match ct.metadata.get("lfm2moe.attention.head_count_kv") {
+            Some(gguf_file::Value::Array(v)) => v
+                .iter()
+                .map(|n| match n {
+                    gguf_file::Value::U32(v) => Ok(*v as usize),
+                    gguf_file::Value::I32(v) if *v >= 0 => Ok(*v as usize),
+                    _ => Err("KV head count must be a nonnegative integer".to_string()),
+                })
+                .collect::<Result<_, _>>()?,
+            _ => return Err("GGUF has no per-layer lfm2moe.attention.head_count_kv".into()),
+        };
+        if heads == 0 || hidden % heads != 0 {
+            return Err("invalid LFM2 MoE head configuration".into());
+        }
+        let f32_bytes = std::mem::size_of::<f32>();
+        Ok(Self {
+            kv_bytes_per_token: kv.iter().sum::<usize>() * (hidden / heads) * 2 * f32_bytes,
+            conv_bytes: kv.iter().filter(|&&k| k == 0).count() * hidden * l_cache * f32_bytes,
+            context,
+        })
+    }
+    /// Bytes charged for a state of `len` positions: KV
+    /// capacity rounded up as the allocator rounds it (a power of two, at
+    /// least 128, at most the model's context).
+    pub fn bytes(&self, len: usize) -> usize {
+        let capacity = len
+            .max(128)
+            .checked_next_power_of_two()
+            .unwrap_or(self.context)
+            .min(self.context);
+        self.kv_bytes_per_token * capacity + self.conv_bytes
+    }
 }
 impl Checkpoint {
     pub fn load(
@@ -944,6 +1054,7 @@ impl Checkpoint {
         }
         let weight_hash = sha256_hex_file(path).map_err(|e| e.to_string())?;
         let tokenizer_hash = sha256_hex_file(tokenizer_path).map_err(|e| e.to_string())?;
+        let state_size = StateSize::from_gguf(&ct)?;
         let execution = crate::device::ExecutionDevice::select(device, device_index)?;
         for reason in &execution.selection_reasons {
             eprintln!("lfm2d adjudicator device: {reason}");
@@ -964,6 +1075,7 @@ impl Checkpoint {
             tokenizer_hash,
             weight_dtypes,
             execution,
+            state_size,
         })
     }
 }
@@ -1682,6 +1794,10 @@ pub struct Adjudicator {
     execution: crate::device::ExecutionDevice,
     context_limit: usize,
     specs: SpecStore<LoadedSpec>,
+    /// Chat checkpoints (`POST /v1/chat`), which tail reads fork. See
+    /// `crate::chat_session`.
+    chats: crate::chat_session::CheckpointStore<crate::chat_session::ChatCheckpoint>,
+    state_size: StateSize,
 }
 impl Adjudicator {
     pub fn load(cli: &Cli) -> Result<Self, String> {
@@ -1757,7 +1873,26 @@ impl Adjudicator {
             tokenizer_hash,
             weight_dtypes,
             execution,
+            state_size,
         } = checkpoint;
+        let budget = cli
+            .chat_checkpoint_budget_mib
+            .checked_mul(1 << 20)
+            .ok_or("--chat-checkpoint-budget-mib overflows")?;
+        // A turn holds two checkpoints (after the user's turn, after the
+        // assistant's): both must fit at the full context, or a turn's second
+        // could evict its own first before the response names it.
+        let full = state_size.bytes(cli.adjudicator_context)
+            + cli.adjudicator_context * (std::mem::size_of::<u32>() + max_token_bytes(&tokenizer));
+        if budget < 2 * full {
+            return Err(format!(
+                "--chat-checkpoint-budget-mib {} cannot hold a turn's two checkpoints at the full \
+                 {}-token context ({} MiB)",
+                cli.chat_checkpoint_budget_mib,
+                cli.adjudicator_context,
+                (2 * full).div_ceil(1 << 20)
+            ));
+        }
         Ok(Self {
             model: Arc::new(model),
             tokenizer,
@@ -1770,6 +1905,8 @@ impl Adjudicator {
             execution,
             context_limit: cli.adjudicator_context,
             specs: SpecStore::new(boot_specs, cli.opinion_spec_capacity),
+            chats: crate::chat_session::CheckpointStore::new(budget),
+            state_size,
         })
     }
     /// The checkpoint's identity, for `GET /v1/adjudicator`. Built from the
@@ -2113,9 +2250,246 @@ impl Generator for Adjudicator {
         request.validate().map_err(Failure::BadRequest)?;
         self.probe_impl(request, check)
     }
+
+    fn chat(
+        &mut self,
+        request: &crate::chat_session::ChatRequest,
+        events: &dyn Fn(crate::chat_session::ChatEvent),
+        at: &dyn YieldPoint<Self>,
+    ) -> Result<crate::chat_session::ChatResponse, Failure> {
+        request.validate().map_err(Failure::BadRequest)?;
+        self.chat_turn(request, events, at)
+    }
+}
+
+/// A checkpoint id naming nothing held: evicted, or never made here. Never a
+/// rebuild from text, which would re-tokenize the generated turns.
+fn unknown_checkpoint(id: &str) -> Failure {
+    Failure::NotFound(format!(
+        "no chat checkpoint {id:?}: it was evicted (least recently used, under \
+         --chat-checkpoint-budget-mib) or never made by this daemon; start the chat again"
+    ))
 }
 
 impl Adjudicator {
+    /// The ids a held chat checkpoint stands for, without touching its
+    /// recency: for tests and tools that check a chain of turns.
+    pub fn chat_checkpoint_ids(&self, id: &str) -> Option<Vec<u32>> {
+        self.chats.peek(id).map(|c| c.ids.clone())
+    }
+
+    /// Hold a chat checkpoint, charged its upper-bound bytes.
+    fn hold_checkpoint(
+        &mut self,
+        id: String,
+        checkpoint: Arc<crate::chat_session::ChatCheckpoint>,
+    ) -> Result<(), Failure> {
+        let bytes = self.state_size.bytes(checkpoint.ids.len())
+            + checkpoint.ids.len() * std::mem::size_of::<u32>()
+            + checkpoint.text.len();
+        let evicted = self.chats.insert(id, bytes, checkpoint).map_err(Failure::Internal)?;
+        if !evicted.is_empty() {
+            tracing::info!(
+                evicted = evicted.len(),
+                held = self.chats.len(),
+                used_bytes = self.chats.used(),
+                budget_bytes = self.chats.budget(),
+                "chat checkpoints evicted"
+            );
+        }
+        Ok(())
+    }
+
+    /// One chat turn: see `crate::chat_session` for the checkpoints and the
+    /// canonical schedule this keeps. Like `generate`, no borrow of `self`
+    /// is held across a pause: the base checkpoint is an `Arc` clone, every
+    /// state is owned, and checkpoints are held only once complete.
+    fn chat_turn(
+        &mut self,
+        request: &crate::chat_session::ChatRequest,
+        events: &dyn Fn(crate::chat_session::ChatEvent),
+        at: &dyn YieldPoint<Self>,
+    ) -> Result<crate::chat_session::ChatResponse, Failure> {
+        use crate::chat_session::{ChatCheckpoint, ChatEvent, ChatResponse, CheckpointKind, checkpoint_id};
+        at.check()?;
+        let begin = Instant::now();
+        let base = match &request.from {
+            Some(id) => {
+                let held = self.chats.get(id).ok_or_else(|| unknown_checkpoint(id))?;
+                if held.kind != CheckpointKind::ChatTurn {
+                    return Err(Failure::BadRequest(format!("checkpoint {id} does not end at a chat turn")));
+                }
+                Some(held)
+            }
+            None => None,
+        };
+        // The segments this turn appends, each rendered and encoded alone:
+        // every one starts at `<|startoftext|>` or `<|im_start|>`, so it
+        // encodes alone to the ids it has in place.
+        let mut texts = Vec::with_capacity(request.messages.len() + 1);
+        if base.is_none() {
+            texts.push(
+                crate::chat::render_head(
+                    request.system.as_deref().unwrap_or(""),
+                    request.tools.as_deref().unwrap_or(&[]),
+                )
+                .map_err(Failure::BadRequest)?,
+            );
+        }
+        for message in &request.messages {
+            texts.push(message.render().map_err(Failure::BadRequest)?);
+        }
+        let encode = |text: &str| encode_ids(&self.tokenizer, text).map_err(Failure::Internal);
+        let segments: Vec<Vec<u32>> = texts.iter().map(|t| encode(t)).collect::<Result<_, _>>()?;
+        let opening = encode(crate::chat::GENERATION_PROMPT)?;
+        let after_eos = encode(crate::chat::AFTER_EOS)?;
+        let mut ids = base.as_ref().map(|b| b.ids.clone()).unwrap_or_default();
+        let mut text = base.as_ref().map(|b| b.text.clone()).unwrap_or_default();
+        for (segment, segment_text) in segments.iter().zip(&texts) {
+            ids.extend_from_slice(segment);
+            text.push_str(segment_text);
+        }
+        let prompt_tokens = ids.len();
+        if [opening.len(), request.max_tokens, after_eos.len()]
+            .iter()
+            .try_fold(prompt_tokens, |n, m| n.checked_add(*m))
+            .is_none_or(|n| n > self.context_limit)
+        {
+            return Err(Failure::BadRequest(format!(
+                "the chat ({prompt_tokens} tokens) plus the assistant's opening and max_tokens \
+                 exceeds the {}-token context",
+                self.context_limit
+            )));
+        }
+        let user_id = checkpoint_id(&ids);
+        let model = self.model.clone();
+        let (user, cached_tokens) = match self.chats.get(&user_id) {
+            // Held already: the canonical schedule would compute this very
+            // state again, so there is nothing to compute.
+            Some(held) => (held, prompt_tokens),
+            None => {
+                let (mut state, cached) = match &base {
+                    Some(b) => (b.state.clone(), b.ids.len()),
+                    None => (self.model.new_state(), 0),
+                };
+                let refs: Vec<&[u32]> = segments.iter().map(Vec::as_slice).collect();
+                let logits = forward_segments(&model, &mut state, &refs, &mut || at.pause(self))?;
+                logits.device().synchronize()?;
+                at.check()?;
+                let user = Arc::new(ChatCheckpoint {
+                    kind: CheckpointKind::ChatTurn,
+                    ids: ids.clone(),
+                    text: text.clone(),
+                    state,
+                });
+                // Complete: readers may fork it from here on, while the
+                // assistant's turn is still being generated.
+                self.hold_checkpoint(user_id.clone(), user.clone())?;
+                (user, cached)
+            }
+        };
+        drop(base);
+        events(ChatEvent::Checkpoint {
+            checkpoint_user: user_id.clone(),
+            prompt_tokens,
+            cached_tokens,
+        });
+        let mut state = user.state.clone();
+        let mut logits = forward_segments(&model, &mut state, &[&opening], &mut || at.pause(self))?;
+        let prefill_ms = begin.elapsed().as_secs_f64() * 1000.;
+        let decode = Instant::now();
+        let history: Vec<u32> = ids.iter().chain(&opening).copied().collect();
+        let mut sampler = crate::constrain::Decoder::new(
+            None,
+            logits.device(),
+            self.model.vocab_size(),
+            &history,
+            self.repeat_penalty,
+        )?;
+        let mut generated = Vec::new();
+        let mut streamed = 0;
+        let mut finish_reason = "length";
+        for i in 0..request.max_tokens {
+            at.pause(self)?;
+            let token = sampler.sample(&logits)?;
+            if self.tokenizer.id_to_token(token).is_none() {
+                return Err(Failure::Internal(format!("model selected unused vocabulary row {token}")));
+            }
+            generated.push(token);
+            if request.stream {
+                let decoded = self
+                    .tokenizer
+                    .decode(&generated, false)
+                    .map_err(|e| Failure::Internal(e.to_string()))?;
+                let delta = crate::chat_session::text_delta(&decoded, &mut streamed).map_err(Failure::Internal)?;
+                events(ChatEvent::Token { id: token, text: delta });
+            }
+            // `<|im_end|>` is forwarded too: the next turn continues after it.
+            if token == self.eos {
+                self.model.forward(&[token], &mut state)?;
+                finish_reason = "stop";
+                break;
+            }
+            if i + 1 < request.max_tokens {
+                logits = self.model.forward(&[token], &mut state)?;
+            }
+        }
+        at.check()?;
+        let content_ids = generated.strip_suffix(&[self.eos]).unwrap_or(&generated);
+        let turn_text = self
+            .tokenizer
+            .decode(content_ids, false)
+            .map_err(|e| Failure::Internal(e.to_string()))?;
+        let (thinking, content) = crate::chat_session::split_reasoning(&turn_text);
+        let mut checkpoint = None;
+        let mut checkpoint_tokens = None;
+        if finish_reason == "stop" {
+            let logits = forward_segments(&model, &mut state, &[&after_eos], &mut || at.pause(self))?;
+            logits.device().synchronize()?;
+            at.check()?;
+            let mut all = history;
+            all.extend_from_slice(&generated);
+            all.extend_from_slice(&after_eos);
+            let generated_text = self
+                .tokenizer
+                .decode(&generated, false)
+                .map_err(|e| Failure::Internal(e.to_string()))?;
+            let id = checkpoint_id(&all);
+            checkpoint_tokens = Some(all.len());
+            self.hold_checkpoint(
+                id.clone(),
+                Arc::new(ChatCheckpoint {
+                    kind: CheckpointKind::ChatTurn,
+                    ids: all,
+                    text: format!(
+                        "{}{}{generated_text}{}",
+                        user.text,
+                        crate::chat::GENERATION_PROMPT,
+                        crate::chat::AFTER_EOS
+                    ),
+                    state,
+                }),
+            )?;
+            checkpoint = Some(id);
+        }
+        Ok(ChatResponse {
+            model: self.info(),
+            checkpoint_user: user_id,
+            checkpoint,
+            text: turn_text,
+            thinking,
+            content,
+            finish_reason: finish_reason.into(),
+            prompt_tokens,
+            cached_tokens,
+            completion_tokens: generated.len(),
+            checkpoint_tokens,
+            queue_ms: 0.,
+            prefill_ms,
+            decode_ms: decode.elapsed().as_secs_f64() * 1000.,
+        })
+    }
+
     /// The F8 read primitive: the spec's fixed `opinion` question at its
     /// prefill, on `/v1/adjudicate` with `opinion: true`.
     fn opinion(
@@ -2245,17 +2619,74 @@ impl Adjudicator {
             ))
         })?;
         check()?;
-        let prompt_text = format!(
-            "{}{}",
-            spec.prefix_text,
-            spec.prompt.render_user_turn(&request.state.render(&spec.prompt.input_label))
-        );
-        let prompt_ids = self
-            .tokenizer
-            .encode(prompt_text.as_str(), false)
-            .map_err(|e| Failure::Internal(e.to_string()))?
-            .get_ids()
-            .to_vec();
+        let state_text = request.state.render(&spec.prompt.input_label);
+        // A tail read forks a held chat checkpoint (`crate::chat_session`);
+        // the `Arc` keeps its state even if it is evicted meanwhile.
+        let tail = match &request.context {
+            None => None,
+            Some(context) => {
+                if !spec.prompt.tools.is_empty() {
+                    return Err(Failure::BadRequest(format!(
+                        "spec {:?} lists tools; a tools spec cannot read a chat tail (its read turn \
+                         was never measured)",
+                        request.spec
+                    )));
+                }
+                let held = self
+                    .chats
+                    .get(&context.checkpoint)
+                    .ok_or_else(|| unknown_checkpoint(&context.checkpoint))?;
+                if held.kind != crate::chat_session::CheckpointKind::ChatTurn {
+                    return Err(Failure::BadRequest(format!(
+                        "checkpoint {} does not end at a chat turn",
+                        context.checkpoint
+                    )));
+                }
+                Some(held)
+            }
+        };
+        // The prompt as text (what `rendered_sha256` covers), as ids, the
+        // text option stability is checked against (it starts at a control
+        // token, so the rest of the prompt cannot change its tokens), and a
+        // tail read's segments after the checkpoint.
+        let (prompt_text, prompt_ids, read_text, tail_segments) = match &tail {
+            None => {
+                let text = format!("{}{}", spec.prefix_text, spec.prompt.render_user_turn(&state_text));
+                let ids = encode_ids(&self.tokenizer, &text).map_err(Failure::Internal)?;
+                (text.clone(), ids, text, None)
+            }
+            Some(held) => {
+                let block = spec
+                    .prefix_text
+                    .strip_prefix("<|startoftext|><|im_start|>system\n")
+                    .and_then(|b| b.strip_suffix("<|im_end|>\n"))
+                    .ok_or_else(|| Failure::Internal("a spec prefix is not one system turn".into()))?;
+                // The read turn: the spec's instructions and schema, then the
+                // state, as ONE user turn, then the closed reasoning region.
+                let head = format!("<|im_start|>user\n{block}\n\n");
+                let turn = spec.prompt.render_user_turn(&format!("{block}\n\n{state_text}"));
+                debug_assert!(turn.starts_with(&head));
+                let head_ids = encode_ids(&self.tokenizer, &head).map_err(Failure::Internal)?;
+                let turn_ids = encode_ids(&self.tokenizer, &turn).map_err(Failure::Internal)?;
+                // Two canonical segments, the head (the spec's, whatever the
+                // state) and the rest, so a prefill of checkpoint + head
+                // (planned background prefill) is the same computation.
+                // The split needs the head's own tokens in place: a state
+                // that starts with a newline merges into the blank line.
+                if !turn_ids.starts_with(&head_ids) {
+                    return Err(Failure::BadRequest(
+                        "a tail read's state must not begin with a newline: it would merge with the \
+                         blank line after the spec's instructions"
+                            .into(),
+                    ));
+                }
+                let mut ids = held.ids.clone();
+                ids.extend_from_slice(&turn_ids);
+                let at = held.ids.len();
+                let split = at + head_ids.len();
+                (format!("{}{turn}", held.text), ids, turn, Some((at, split)))
+            }
+        };
         let context_limit = spec.info.context_limit;
         if prompt_ids.len() + 2 >= context_limit {
             return Err(Failure::BadRequest(
@@ -2263,7 +2694,12 @@ impl Adjudicator {
             ));
         }
         let mut cache = CacheOutcome {
-            prefix: if request.use_cache { "hit" } else { "bypass" }.into(),
+            prefix: match (&tail, request.use_cache) {
+                (_, false) => "bypass",
+                (None, true) => "hit",
+                (Some(_), true) => "checkpoint",
+            }
+            .into(),
             state: "miss".into(),
             described: "miss".into(),
         };
@@ -2292,10 +2728,38 @@ impl Adjudicator {
                     mut state,
                     mut logits,
                     cached_tokens,
-                } = spec
-                    .cache
-                    .prepare(&self.model, &prompt_ids, request.use_cache, check)?;
-                if request.use_cache && cached_tokens == prompt_ids.len() {
+                } = match (&tail, tail_segments) {
+                    (None, _) => spec
+                        .cache
+                        .prepare(&self.model, &prompt_ids, request.use_cache, check)?,
+                    // Resumed: the checkpoint's state, then the read turn's
+                    // two segments. Nothing is published: the read turn is
+                    // this request's alone.
+                    (Some(held), Some((at, split))) if request.use_cache => {
+                        let mut state = held.state.clone();
+                        let logits = forward_segments(
+                            &self.model,
+                            &mut state,
+                            &[&prompt_ids[at..split], &prompt_ids[split..]],
+                            &mut || check(),
+                        )?;
+                        logits.device().synchronize()?;
+                        check()?;
+                        PreparedEvaluation { state, logits, cached_tokens: at }
+                    }
+                    // Cold, as asked: the same bytes from token 0 in plain
+                    // chunks. The instrument for how far a resumed read sits
+                    // from a cold one; it still needs the checkpoint for
+                    // the ids.
+                    (Some(_), _) => {
+                        let mut state = self.model.new_state();
+                        let logits = forward_chunks(&self.model, &mut state, &prompt_ids, CHUNK, &mut || check())?;
+                        logits.device().synchronize()?;
+                        check()?;
+                        PreparedEvaluation { state, logits, cached_tokens: 0 }
+                    }
+                };
+                if request.use_cache && tail.is_none() && cached_tokens == prompt_ids.len() {
                     cache.state = "hit".into();
                 }
                 let prefill_ms = begin.elapsed().as_secs_f64() * 1000.;
@@ -2398,7 +2862,7 @@ impl Adjudicator {
             for option in &question.options {
                 let (alone, stable) = suffix_is_stable(
                     &self.tokenizer,
-                    &format!("{prompt_text}{text}"),
+                    &format!("{read_text}{text}"),
                     &format!("{option}{}", question.close),
                 )
                 .map_err(Failure::Internal)?;
@@ -2440,6 +2904,7 @@ impl Adjudicator {
         Ok(OpinionResponse {
             prefix: spec.info.clone(),
             spec: request.spec.clone(),
+            context: request.context.clone(),
             described,
             answers,
             rendered: request.rendered.then(|| format!("{prompt_text}{last_text}")),
@@ -3107,6 +3572,11 @@ enum Job {
     Register(String, PromptSpec),
     Unregister(String),
     Probe(crate::probe_api::ProbeRequest),
+    /// A chat turn, and where a streaming caller hears its progress.
+    Chat(
+        crate::chat_session::ChatRequest,
+        Option<tokio::sync::mpsc::UnboundedSender<crate::chat_session::ChatEvent>>,
+    ),
 }
 impl Job {
     fn timeout_ms(&self) -> u64 {
@@ -3115,6 +3585,7 @@ impl Job {
             Job::Opinion(r, _) => r.timeout_ms,
             Job::Register(..) | Job::Unregister(_) => SPEC_ADMIN_TIMEOUT_MS,
             Job::Probe(r) => r.timeout_ms,
+            Job::Chat(r, _) => r.timeout_ms,
         }
     }
     /// Which queue this job waits in: see [`Priority`].
@@ -3122,7 +3593,9 @@ impl Job {
         match self {
             Job::Adjudicate(r) if r.opinion => Priority::Interactive,
             Job::Opinion(..) | Job::Probe(_) => Priority::Interactive,
-            Job::Adjudicate(_) | Job::Register(..) | Job::Unregister(_) => Priority::Generative,
+            Job::Adjudicate(_) | Job::Chat(..) | Job::Register(..) | Job::Unregister(_) => {
+                Priority::Generative
+            }
         }
     }
     fn operation(&self) -> &'static str {
@@ -3132,6 +3605,7 @@ impl Job {
             Job::Register(..) => "register",
             Job::Unregister(_) => "unregister",
             Job::Probe(_) => "probe",
+            Job::Chat(..) => "chat",
         }
     }
 }
@@ -3141,6 +3615,7 @@ enum Reply {
     Register(RegisterOutcome),
     Unregister(UnregisterOutcome),
     Probe(crate::probe_api::ProbeResponse),
+    Chat(crate::chat_session::ChatResponse),
 }
 struct Work {
     job: Job,
@@ -3341,6 +3816,32 @@ impl Worker {
                         );
                         Reply::Probe(r)
                     }),
+                Job::Chat(request, events) => {
+                    // A closed stream is the streaming caller gone: its
+                    // handler drops the reply then, which `check` sees.
+                    let send = |event| {
+                        if let Some(events) = events {
+                            let _ = events.send(event);
+                        }
+                    };
+                    check()
+                        .and_then(|()| generator.chat(request, &send, &pause))
+                        .map(|mut r| {
+                            r.queue_ms = queue_ms;
+                            tracing::info!(
+                                interleaved = pause.served.get(),
+                                interleaved_ms = pause.paused.get().as_secs_f64() * 1000.,
+                                prompt_tokens = r.prompt_tokens,
+                                cached_tokens = r.cached_tokens,
+                                completion_tokens = r.completion_tokens,
+                                finish_reason = %r.finish_reason,
+                                prefill_ms = r.prefill_ms,
+                                decode_ms = r.decode_ms,
+                                "chat turn complete"
+                            );
+                            Reply::Chat(r)
+                        })
+                }
             };
             if let Err(e) = &result {
                 let kind = match e {
@@ -3486,6 +3987,18 @@ impl Handle {
     // to please the size heuristic would cost a heap allocation per refusal.
     #[allow(clippy::result_large_err)]
     async fn submit(&self, job: Job, span: &'static str) -> Result<Reply, Response> {
+        let (rx, timeout) = self.enqueue(job, span)?;
+        Self::reply(rx, timeout).await.map_err(IntoResponse::into_response)
+    }
+    /// Queue `job`, or refuse it as `submit` does (stopping, overloaded,
+    /// worker gone): the part a streaming response must finish before it
+    /// commits to a `200`.
+    #[allow(clippy::result_large_err)]
+    fn enqueue(
+        &self,
+        job: Job,
+        span: &'static str,
+    ) -> Result<(oneshot::Receiver<Result<Reply, Failure>>, Duration), Response> {
         if self.stopping.load(Ordering::SeqCst) {
             return Err(Failure::Cancelled.into_response());
         }
@@ -3501,13 +4014,90 @@ impl Handle {
             crossbeam_channel::TrySendError::Full(_)=>(StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":{"type":"overloaded","message":"adjudicator queue is full"}}))).into_response(),
             crossbeam_channel::TrySendError::Disconnected(_)=>Failure::Internal("adjudicator worker unavailable".into()).into_response(),
         })?;
+        Ok((rx, timeout))
+    }
+    /// The worker's answer, or `Deadline` once the job's own timeout passes.
+    async fn reply(
+        rx: oneshot::Receiver<Result<Reply, Failure>>,
+        timeout: Duration,
+    ) -> Result<Reply, Failure> {
         match tokio::time::timeout(timeout, rx).await {
-            Err(_) => Err(Failure::Deadline.into_response()),
-            Ok(Err(_)) => {
-                Err(Failure::Internal("adjudicator worker dropped response".into()).into_response())
-            }
-            Ok(Ok(result)) => result.map_err(IntoResponse::into_response),
+            Err(_) => Err(Failure::Deadline),
+            Ok(Err(_)) => Err(Failure::Internal("adjudicator worker dropped response".into())),
+            Ok(Ok(result)) => result,
         }
+    }
+    /// `POST /v1/chat` answering with one JSON body.
+    #[allow(clippy::result_large_err)]
+    pub async fn chat(
+        &self,
+        request: crate::chat_session::ChatRequest,
+    ) -> Result<crate::chat_session::ChatResponse, Response> {
+        request
+            .validate()
+            .map_err(|e| Failure::BadRequest(e).into_response())?;
+        match self.submit(Job::Chat(request, None), "chat").await? {
+            Reply::Chat(r) => Ok(r),
+            _ => Err(Failure::Internal("worker answered a chat with something else".into()).into_response()),
+        }
+    }
+    /// `POST /v1/chat` with `stream: true`: server-sent events. A request
+    /// the worker would refuse before starting (malformed, overloaded,
+    /// stopping) is refused with its HTTP status here; once the `200` is
+    /// sent, a failure is an `error` event carrying the status and the
+    /// error body. A client that disconnects cancels the turn: dropping the
+    /// reply is what the worker's check sees.
+    #[allow(clippy::result_large_err)]
+    pub fn chat_stream(&self, request: crate::chat_session::ChatRequest) -> Result<Response, Response> {
+        use axum::response::sse::{Event, KeepAlive, Sse};
+        request
+            .validate()
+            .map_err(|e| Failure::BadRequest(e).into_response())?;
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (rx, timeout) = self.enqueue(Job::Chat(request, Some(events_tx)), "chat")?;
+        let (sse_tx, sse_rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+        let event = |e: &crate::chat_session::ChatEvent| {
+            let name = match e {
+                crate::chat_session::ChatEvent::Checkpoint { .. } => "checkpoint",
+                crate::chat_session::ChatEvent::Token { .. } => "token",
+            };
+            Event::default().event(name).json_data(e).expect("a chat event always serializes")
+        };
+        tokio::spawn(async move {
+            let reply = Self::reply(rx, timeout);
+            tokio::pin!(reply);
+            let last = loop {
+                tokio::select! {
+                    Some(e) = events_rx.recv() => {
+                        if sse_tx.send(Ok(event(&e))).is_err() {
+                            return;
+                        }
+                    }
+                    result = &mut reply => break result,
+                    // The client is gone: returning drops the reply.
+                    () = sse_tx.closed() => return,
+                }
+            };
+            // Every event the worker sent precedes its reply.
+            while let Ok(e) = events_rx.try_recv() {
+                let _ = sse_tx.send(Ok(event(&e)));
+            }
+            let last = match last {
+                Ok(Reply::Chat(r)) => Event::default().event("done").json_data(&r),
+                Ok(_) => Event::default().event("error").json_data(
+                    Failure::Internal("worker answered a chat with something else".into()).parts().1,
+                ),
+                Err(failure) => {
+                    let (status, mut body) = failure.parts();
+                    body["status"] = status.as_u16().into();
+                    Event::default().event("error").json_data(body)
+                }
+            };
+            let _ = sse_tx.send(Ok(last.expect("a chat response always serializes")));
+        });
+        Ok(Sse::new(tokio_stream::wrappers::UnboundedReceiverStream::new(sse_rx))
+            .keep_alive(KeepAlive::default())
+            .into_response())
     }
     #[allow(clippy::result_large_err)]
     pub async fn evaluate(
@@ -3654,7 +4244,8 @@ pub fn router(handle: Handle, probe_enabled: bool) -> Router {
                 // sit behind for 1-2 MiB bodies, and never saw beyond it).
                 .layer(DefaultBodyLimit::max(MAX_SPEC_BYTES)),
         )
-        .route("/v1/opinion/specs/{id}", axum::routing::delete(delete_spec));
+        .route("/v1/opinion/specs/{id}", axum::routing::delete(delete_spec))
+        .route("/v1/chat", post(chat));
     if probe_enabled {
         router = router.route("/v1/probe", post(probe));
     }
@@ -3683,6 +4274,17 @@ async fn opine(
     crate::server::ValidJson(request): crate::server::ValidJson<crate::opinion_api::OpinionRequest>,
 ) -> Result<Json<crate::opinion_api::OpinionResponse>, Response> {
     h.opine(request).await.map(Json)
+}
+#[allow(clippy::result_large_err)]
+async fn chat(
+    State(h): State<Handle>,
+    crate::server::ValidJson(request): crate::server::ValidJson<crate::chat_session::ChatRequest>,
+) -> Result<Response, Response> {
+    if request.stream {
+        h.chat_stream(request)
+    } else {
+        h.chat(request).await.map(|r| Json(r).into_response())
+    }
 }
 #[allow(clippy::result_large_err)]
 async fn probe(
@@ -4433,7 +5035,7 @@ mod priority_tests {
     /// Only reads and probes overtake. The F8 read travels as an
     /// `AdjudicateRequest`, so the flag, not the job type, decides.
     #[test]
-    fn reads_and_probes_are_interactive_and_everything_that_removes_or_generates_is_not() {
+    fn reads_and_probes_are_interactive_and_everything_that_removes_generates_or_chats_is_not() {
         let adjudicate = |opinion: bool| -> AdjudicateRequest {
             serde_json::from_value(serde_json::json!({"spec": "s", "input": "x", "opinion": opinion})).unwrap()
         };
@@ -4447,6 +5049,8 @@ mod priority_tests {
             "input_label": "Input", "system": "Judge."
         }))
         .unwrap();
+        let chat: crate::chat_session::ChatRequest =
+            serde_json::from_value(serde_json::json!({"messages": [{"role": "user", "content": "hi"}]})).unwrap();
         for (job, class) in [
             (Job::Adjudicate(adjudicate(true)), Priority::Interactive),
             (Job::Opinion(opinion, vec![]), Priority::Interactive),
@@ -4454,6 +5058,7 @@ mod priority_tests {
             (Job::Adjudicate(adjudicate(false)), Priority::Generative),
             (Job::Register("id".into(), prompt), Priority::Generative),
             (Job::Unregister("id".into()), Priority::Generative),
+            (Job::Chat(chat, None), Priority::Generative),
         ] {
             assert_eq!(job.priority(), class, "{}", job.operation());
         }

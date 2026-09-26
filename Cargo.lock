@@ -1539,6 +1539,7 @@ dependencies = [
  "tempfile",
  "tokenizers",
  "tokio",
+ "tokio-stream",
  "tower",
  "tracing",
  "tracing-opentelemetry",

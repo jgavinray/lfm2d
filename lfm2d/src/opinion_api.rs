@@ -84,6 +84,22 @@ impl OpinionState {
     }
 }
 
+/// A tail read's chat. The read renders, after the checkpoint's ids:
+///
+/// `<|im_start|>user\n{spec block}\n\n{facts}{input_label}:\n{input}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n`
+///
+/// where the spec block is the spec's system turn content (its `system`, then
+/// `Return exactly one JSON object matching this schema: ` and the schema).
+/// That shape was measured after chats with preserved reasoning: `{"` at
+/// rank 1-2 (chat-tail probe, 2026-09-26). A spec with `tools` is refused:
+/// its read turn was never measured. The checkpoint must be held; an
+/// evicted one is a 404, never a rebuild.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OpinionContext {
+    pub checkpoint: String,
+}
+
 /// One question: a choice field of the spec, optionally narrowed to a subset
 /// of its options. The subset is scored in the spec's order, not the
 /// request's.
@@ -101,11 +117,13 @@ pub struct OpinionRequest {
     /// A loaded spec's name (`GET /v1/opinion/specs`).
     pub spec: String,
     pub state: OpinionState,
-    /// Reserved for a shared block between the prefix and the state. v1
-    /// accepts only `null`; anything else is refused so the field's meaning
-    /// is settled before a caller depends on it.
+    /// A chat to read the tail of: `{"checkpoint": id}`, a chat checkpoint
+    /// `POST /v1/chat` left (`crate::chat_session`). The read's user turn
+    /// then follows the chat instead of the spec's system turn, carrying
+    /// the spec's instructions and schema itself ([`OpinionContext`]).
+    /// `null` or absent: the spec's own prompt, as before.
     #[serde(default)]
-    pub context: Option<serde_json::Value>,
+    pub context: Option<OpinionContext>,
     /// One or more choice fields. They share one description: the engine
     /// walks the grammar once and reads each slot as it passes it, so the
     /// answers come back in emission order whatever order they were asked.
@@ -129,8 +147,10 @@ impl OpinionRequest {
             return Err("spec must name a loaded prompt spec".into());
         }
         self.state.validate()?;
-        if self.context.is_some() {
-            return Err("context is reserved and must be null".into());
+        if let Some(context) = &self.context
+            && !crate::chat_session::is_checkpoint_id(&context.checkpoint)
+        {
+            return Err("context.checkpoint must be a checkpoint id: 64 lowercase hex digits".into());
         }
         if self.questions.is_empty() {
             return Err("ask at least one question".into());
@@ -379,7 +399,8 @@ pub struct Answer {
 /// consults the prompt checkpoint).
 #[derive(Clone, Debug, Serialize)]
 pub struct CacheOutcome {
-    /// The spec's resident system prefix.
+    /// The spec's resident system prefix; `checkpoint` for a tail read,
+    /// which forks a chat checkpoint and never uses the spec's prefix.
     pub prefix: String,
     /// The exact rendered prompt, before any description.
     pub state: String,
@@ -392,6 +413,10 @@ pub struct OpinionResponse {
     #[serde(flatten)]
     pub prefix: PrefixInfo,
     pub spec: String,
+    /// The request's `context`, echoed: which chat checkpoint this read
+    /// forked. Absent for a read of the spec's own prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<OpinionContext>,
     /// The fields generated before the LAST asked slot, as the model wrote
     /// them; an earlier answer was read on a prefix of this description.
     pub described: Vec<DescribedField>,
@@ -520,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_needs_at_least_one_question_and_no_context() {
+    fn a_request_needs_at_least_one_question_and_a_well_formed_context() {
         let parse = |s: &str| serde_json::from_str::<OpinionRequest>(s).unwrap();
         let good = parse(r#"{"spec":"s","state":{"input":"x"},"questions":[{"field":"v"}]}"#);
         assert!(good.validate().is_ok());
@@ -531,10 +556,26 @@ mod tests {
         assert!(two.validate().is_ok(), "several questions share one description");
         let none = parse(r#"{"spec":"s","state":{"input":"x"},"questions":[]}"#);
         assert!(none.validate().is_err());
-        let ctx = parse(
-            r#"{"spec":"s","state":{"input":"x"},"context":1,"questions":[{"field":"v"}]}"#,
+        for bad in [r#"1"#, r#"{"checkpoint":"abc"}"#, r#"{"checkpoint":"ABCDEF"}"#] {
+            let json = format!(r#"{{"spec":"s","state":{{"input":"x"}},"context":{bad},"questions":[{{"field":"v"}}]}}"#);
+            match serde_json::from_str::<OpinionRequest>(&json) {
+                Ok(r) => assert!(r.validate().is_err(), "{bad}"),
+                Err(_) => {}
+            }
+        }
+        let id = crate::chat_session::checkpoint_id(&[1, 2]);
+        let tail = parse(&format!(
+            r#"{{"spec":"s","state":{{"input":"x"}},"context":{{"checkpoint":"{id}"}},"questions":[{{"field":"v"}}]}}"#
+        ));
+        assert!(tail.validate().is_ok());
+        assert_eq!(tail.context, Some(OpinionContext { checkpoint: id }));
+        assert!(
+            serde_json::from_str::<OpinionRequest>(
+                r#"{"spec":"s","state":{"input":"x"},"context":{"checkpoint":"x","other":1},"questions":[{"field":"v"}]}"#
+            )
+            .is_err(),
+            "context takes no other fields"
         );
-        assert!(ctx.validate().is_err());
         let null_ctx = parse(
             r#"{"spec":"s","state":{"input":"x"},"context":null,"questions":[{"field":"v"}]}"#,
         );
