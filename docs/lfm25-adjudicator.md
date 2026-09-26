@@ -1031,17 +1031,26 @@ Chat keeps preserved reasoning in its history, which fills 4096 tokens within
 a few turns. Attention is eager: each 128-token prefill chunk materializes
 `32 heads x 128 x kv_len` f32 scores, 480 MiB at 30k, and decode reads the
 whole K/V for every token. What a deep context costs on gfx1151, cold
-prefill from an empty state straight on the model, host otherwise idle
-(2026-09-26, candle with allocator size classes):
+prefill from an empty state straight on the model (`long_context_costs` in
+`lfm2d/tests/long_context_real.rs`), candle `d0735dc9`, 2026-09-26 16:15–16:23:
 
-| depth | prefill | decode | peak GPU (model 6.4 GiB) | one state's K/V |
+| depth | prefill | decode | peak GPU (model 6.3 GiB) | one state's K/V |
 |---:|---:|---:|---:|---:|
-| 128 | 0.2 s | 94–105 tok/s | 6.6 GiB | 3 MiB |
-| 8192 | 13.4 s (613 tok/s) | 68 tok/s | 9.3 GiB | 192 MiB |
-| 16384 | 31 s (529 tok/s) | 50 tok/s | 12.4 GiB | 384 MiB |
-| 30000 | 71 s (423 tok/s) | 34 tok/s | 17.4 GiB | 768 MiB |
+| 128 | 0.18 s | 93–101 tok/s | 6.5 GiB | 3 MiB |
+| 8192 | 13.6–13.9 s (589–603 tok/s) | 67–68 tok/s | 9.1 GiB | 192 MiB |
+| 16384 | 32.5–32.7 s (500–505 tok/s) | 46–48 tok/s | 12.1 GiB | 384 MiB |
+| 30000 | 76.1–76.4 s (393–394 tok/s) | 33 tok/s | 17.0 GiB | 768 MiB |
 
-n=2 at 128–16384 and n=1 at 30000; 128 decoded tokens per depth. A state's
+n=2 at every depth (ranges are the two runs), 128 decoded tokens per depth,
+depths run in that order in one process. The host was NOT idle: another
+tenant held a 62 GiB model resident, and rocm-smi read the GPU 100% busy
+between the two runs, with neither of ours going. The first table, taken on the allocator prototype (`6223100c`) with the
+host otherwise idle (n=2 at 128–16384, n=1 at 30000), read prefill 13.4 /
+31 / 71 s and decode 94–105 / 68 / 50 / 34 tok/s; peak memory is unchanged
+between the two. (That table's GiB column was MiB / 1000; it read 6.6 /
+9.3 / 12.4 / 17.4 for the same peaks.) The 2–7% slower prefill here is
+within what a shared GPU explains; telling it apart from the kernels the
+pin adds needs a rerun on a quiet host. A state's
 K/V is 24 KiB per token (6 attention layers x K and V x 8 heads x 64 x f32)
 at the power-of-two capacity the K/V allocator rounds to, so any state past
 16384 tokens holds 768 MiB.
@@ -1053,15 +1062,21 @@ That parked memory is GTT, host RAM that the OOM killer does not count
 against the process, so it killed other pods first. A context above 8192
 needs that allocator fix ("rocm: geometric size classes for allocator
 buckets above 64 KiB", candle `d0735dc9` in the pinned `lfm25-batch`; the
-prototype `6223100c` is the same patch); with it, what a prefill parks grows
-linearly: 2.7 GiB after 8192, 5.9 GiB after 16384, 10.8 GiB after 30000.
+prototype `6223100c` is the same patch); with it, what the allocator still
+holds once the state is dropped grows linearly: above the post-warm-up
+baseline, 2.7 / 5.7 / 10.6 GiB after the 8192, 16384 and 30000 prefills run
+in sequence in one process (each depth alone added 2.7 / 3.0 / 4.9 GiB). Both runs agree
+to 3 MiB; the prototype's 2.7 / 5.9 / 10.8, in MiB / 1000, agree within
+0.1.
 
 Two things scale with the budget rather than with traffic. The caches evict
 by entry count, not bytes: 16 described states per spec plus one ready
 prompt, each up to 768 MiB for a long read. And `/v1/probe` `ids` are capped
 by the context only, not by bytes, so one request can prefill the whole
-budget. A cold opinion read with a 64 KiB `facts` block is about 18k tokens
-and 36 s, over the default 30 s `timeout_ms`.
+budget. A cold opinion read with a 64 KiB `facts` block is 18051 tokens and
+38 s (a described-cache hit on the same state: 176 ms), over the default
+30 s `timeout_ms`; a 29937-token probe prefilled in 78 s (both n=1, same
+shared-GPU conditions as the table).
 
 ## Snapshot semantics
 
