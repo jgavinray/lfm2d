@@ -399,7 +399,8 @@ pub struct Answer {
 /// consults the prompt checkpoint).
 #[derive(Clone, Debug, Serialize)]
 pub struct CacheOutcome {
-    /// The spec's resident system prefix.
+    /// The spec's resident system prefix; `checkpoint` for a tail read,
+    /// which forks a chat checkpoint and never uses the spec's prefix.
     pub prefix: String,
     /// The exact rendered prompt, before any description.
     pub state: String,

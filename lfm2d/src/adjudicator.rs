@@ -677,11 +677,13 @@ fn forward_segments(
     logits.ok_or_else(|| Failure::Internal("no segments to forward".into()))
 }
 
-/// What a chat checkpoint costs beyond its model state: its ids and an
-/// allowance for its text (16 bytes a token covers the longest byte-level
-/// token with room to spare).
-fn checkpoint_extra_bytes(tokens: usize) -> usize {
-    tokens * (std::mem::size_of::<u32>() + 16)
+/// At least the most bytes any one token decodes to: the vocabulary's
+/// longest entry in UTF-8 (a byte-level entry spells each byte as one
+/// character of one or two UTF-8 bytes; an added token decodes to its own
+/// text). Bounds a checkpoint's text before it exists, for the startup
+/// budget check.
+fn max_token_bytes(tokenizer: &tokenizers::Tokenizer) -> usize {
+    tokenizer.get_vocab(true).keys().map(String::len).max().unwrap_or(0)
 }
 
 /// Resolve `/v1/probe`'s `decode_from` (a byte offset into the rendered
@@ -1876,14 +1878,18 @@ impl Adjudicator {
             .chat_checkpoint_budget_mib
             .checked_mul(1 << 20)
             .ok_or("--chat-checkpoint-budget-mib overflows")?;
-        let full = state_size.bytes(cli.adjudicator_context) + checkpoint_extra_bytes(cli.adjudicator_context);
-        if budget < full {
+        // A turn holds two checkpoints (after the user's turn, after the
+        // assistant's): both must fit at the full context, or a turn's second
+        // could evict its own first before the response names it.
+        let full = state_size.bytes(cli.adjudicator_context)
+            + cli.adjudicator_context * (std::mem::size_of::<u32>() + max_token_bytes(&tokenizer));
+        if budget < 2 * full {
             return Err(format!(
-                "--chat-checkpoint-budget-mib {} cannot hold one checkpoint at the full {}-token context \
-                 ({} MiB)",
+                "--chat-checkpoint-budget-mib {} cannot hold a turn's two checkpoints at the full \
+                 {}-token context ({} MiB)",
                 cli.chat_checkpoint_budget_mib,
                 cli.adjudicator_context,
-                full.div_ceil(1 << 20)
+                (2 * full).div_ceil(1 << 20)
             ));
         }
         Ok(Self {
@@ -2277,7 +2283,9 @@ impl Adjudicator {
         id: String,
         checkpoint: Arc<crate::chat_session::ChatCheckpoint>,
     ) -> Result<(), Failure> {
-        let bytes = self.state_size.bytes(checkpoint.ids.len()) + checkpoint_extra_bytes(checkpoint.ids.len());
+        let bytes = self.state_size.bytes(checkpoint.ids.len())
+            + checkpoint.ids.len() * std::mem::size_of::<u32>()
+            + checkpoint.text.len();
         let evicted = self.chats.insert(id, bytes, checkpoint).map_err(Failure::Internal)?;
         if !evicted.is_empty() {
             tracing::info!(
@@ -2685,7 +2693,12 @@ impl Adjudicator {
             ));
         }
         let mut cache = CacheOutcome {
-            prefix: if request.use_cache { "hit" } else { "bypass" }.into(),
+            prefix: match (&tail, request.use_cache) {
+                (_, false) => "bypass",
+                (None, true) => "hit",
+                (Some(_), true) => "checkpoint",
+            }
+            .into(),
             state: "miss".into(),
             described: "miss".into(),
         };

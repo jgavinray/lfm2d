@@ -614,7 +614,8 @@ it generated (a re-encoding of its text can differ: `on`+`zero` generated,
 `onz`+`ero` re-encoded). Every turn is rendered at the handler, so a
 forged control token or an empty turn is a `400` that never queues.
 `max_tokens` defaults to 2048; the chat plus the opening plus `max_tokens`
-must fit the context. The response (values illustrative):
+must fit the context. `timeout_ms` defaults to 120000 and goes to 600000
+(a reasoning turn is long). The response (values illustrative):
 
 ```json
 {"model_id": "…", "weight_hash": "…", "context_limit": 4096, "…": "…",
@@ -628,9 +629,11 @@ must fit the context. The response (values illustrative):
 ```
 
 `text` is the turn as generated, control tokens included, `<|im_end|>`
-excluded. `thinking`/`content` split it at the reasoning region, so
-`{"role": "assistant", thinking, content}` re-renders to `text`'s bytes
-(`chat_real.rs` checks this against the generated ids). Tool calls are not
+excluded. `thinking`/`content` split it at the reasoning region; when the
+region closed, `{"role": "assistant", thinking, content}` re-renders to
+`text`'s bytes (`chat_real.rs` checks this against the generated ids). A
+region cut off by `max_tokens` has no rendering (the template always
+closes it): `thinking` holds it and `content` is `null`. Tool calls are not
 parsed; they are raw in `content`. `checkpoint` is `null` when
 `finish_reason` is `length`: closing the turn would write an
 `<|im_end|>` the model did not. `cached_tokens` is `from`'s length, or all
@@ -653,7 +656,8 @@ data: {…the response above…}
 `checkpoint` arrives once the appended turns are prefilled: from then on a
 read can fork the chat while its answer is still being generated. A
 `token`'s `text` is what it adds to the decoded turn (`""` for a token that
-ends inside a multi-byte character; the character arrives with the next).
+ends inside a multi-byte character; the character arrives with the next,
+and a turn cut off inside one leaves U+FFFD in `done`'s `text` only).
 A refusal before the stream starts (malformed, overloaded, stopping) keeps
 its HTTP status; after the `200`, a failure is an `error` event carrying
 `{"status", "error": {"type", "message"}}`. A client that hangs up cancels
@@ -679,10 +683,11 @@ and B and continuing after A with B reach the same state bit for bit,
 checked across two daemons in `chat_real.rs`.
 
 The store is in memory, bounded by `--chat-checkpoint-budget-mib`
-(default 16384), least recently used evicted first. A checkpoint is
+(default 16384), least recently used evicted first; startup refuses a
+budget that cannot hold a turn's two checkpoints at the full context. A checkpoint is
 charged an upper bound read off the GGUF: KV rounded up as the append
-allocator rounds it (a power of two, at least 128 positions), the
-convolution state, and its ids and text. Checkpoints of one chat share KV
+allocator rounds it (a power of two, at least 128 positions) and the
+convolution state, plus its ids and text exactly. Checkpoints of one chat share KV
 buffers and each is charged in full, so the store holds at least what the
 budget says. Startup refuses a budget that cannot hold one checkpoint at
 the full context. Entries carry a kind; chats and reads start only from a
@@ -712,7 +717,8 @@ forwarded as two segments, split after the block's blank line, so a
 prefill of checkpoint + block (piece 6) is the same computation; a state
 that begins with a newline would merge into that blank line and is a
 `400`. A spec with `tools` is a `400`: its read turn was never measured.
-The response echoes `context`; `rendered_sha256` covers the whole chat, and
+The response echoes `context` and reports `cache.prefix: "checkpoint"`
+(the spec's own prefix is never used); `rendered_sha256` covers the whole chat, and
 `rendered`/`rendered_token_ids` carry it when asked. The described cache
 works unchanged, keyed by the full prompt ids. An unknown checkpoint is a
 `404`.

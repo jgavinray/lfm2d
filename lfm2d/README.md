@@ -113,7 +113,7 @@ CLI flags, each with an env-var fallback (`clap`'s `env` feature):
 | `--opinion-spec` (repeatable) | `LFM2D_OPINION_SPECS` (comma-separated) | A boot-time spec, named by its file stem. Optional: with none the menu starts empty and fills by upload. Needs the adjudicator. No spec is a default |
 | `--opinion-spec-capacity` | `LFM2D_OPINION_SPEC_CAPACITY` | How many uploaded specs stay resident (LRU), default `8`; boot specs don't count and are never evicted |
 | `--no-probe` | `LFM2D_PROBE` (`0` disables) | Removes `/v1/probe`; `/v1/opinion` and `/v1/adjudicate` are unaffected |
-| `--chat-checkpoint-budget-mib` | `LFM2D_CHAT_CHECKPOINT_BUDGET_MIB` | Memory for chat checkpoints (`/v1/chat`, tail reads), default `16384`; least recently used evicted first; must hold one full-context checkpoint |
+| `--chat-checkpoint-budget-mib` | `LFM2D_CHAT_CHECKPOINT_BUDGET_MIB` | Memory for chat checkpoints (`/v1/chat`, tail reads), default `16384`; least recently used evicted first; must hold a turn's two checkpoints at the full context |
 
 Standard OTEL env vars also apply (`OTEL_EXPORTER_OTLP_ENDPOINT`,
 `OTEL_SERVICE_NAME` default `lfm2d`, ...) — see "Observability" below; none

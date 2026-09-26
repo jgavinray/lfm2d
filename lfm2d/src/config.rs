@@ -67,7 +67,8 @@ pub struct Cli {
     /// used checkpoint is evicted and a request naming it gets a 404. Each
     /// checkpoint is charged an upper bound on its state (KV rounded up as
     /// the allocator rounds it), so the store holds at least what this
-    /// says. Must hold one checkpoint at the full adjudicator context.
+    /// says. Must hold a turn's two checkpoints at the full adjudicator
+    /// context.
     #[arg(long = "chat-checkpoint-budget-mib", env = "LFM2D_CHAT_CHECKPOINT_BUDGET_MIB", default_value_t = 16384)]
     pub chat_checkpoint_budget_mib: usize,
 

@@ -158,7 +158,8 @@ fn default_timeout() -> u64 {
     120_000
 }
 /// The longest reply `max_tokens` may ask for; the context limit binds first
-/// on any configuration this daemon accepts today.
+/// on any configuration this daemon accepts today. `timeout_ms` goes to
+/// 600000, five times the other routes': a reasoning turn is long.
 pub const MAX_CHAT_TOKENS: usize = 32_768;
 
 /// `POST /v1/chat`: append turns and generate the assistant's.
@@ -230,9 +231,12 @@ impl ChatRequest {
 
 /// The turn's outcome. `text` is the assistant's turn exactly as generated,
 /// control tokens included and the closing `<|im_end|>` excluded; `thinking`
-/// and `content` split it at the reasoning region, so re-rendering
-/// `{"role": "assistant", thinking, content}` gives `text`'s bytes. Tool
-/// calls are not parsed: they are in `content`, raw.
+/// and `content` split it at the reasoning region ([`split_reasoning`]). When
+/// the region closed (or never opened), re-rendering
+/// `{"role": "assistant", thinking, content}` gives `text`'s bytes; an
+/// unclosed region has no rendering (the template always writes
+/// `</think>`), so only `text` holds it. Tool calls are not parsed: they are
+/// in `content`, raw.
 #[derive(Clone, Debug, Serialize)]
 pub struct ChatResponse {
     #[serde(flatten)]
@@ -270,7 +274,9 @@ pub enum ChatEvent {
     Checkpoint { checkpoint_user: String, prompt_tokens: usize, cached_tokens: usize },
     /// One generated token. `text` is what it adds to the decoded turn; a
     /// token that ends inside a multi-byte character adds `""` and the
-    /// character arrives with the token that completes it.
+    /// character arrives with the token that completes it. A turn cut off
+    /// inside a character ends with U+FFFD in `done`'s `text` and in no
+    /// token: `done` is authoritative.
     Token { id: u32, text: String },
 }
 
