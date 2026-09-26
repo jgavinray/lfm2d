@@ -21,7 +21,8 @@ Tell LFM2.5-8B-A1B what you want on the left, in an ordinary chat; offers
 that other agents send back arrive on the right, and each one gets an
 opinion read against the chat's tail as it lands: a second or two, no chat
 turn. The feed keeps, drops or holds each item on what the read said. Needs
-a daemon with `/v1/chat` (`docs/chat-tail-plan.md`); the page uploads the
+a daemon with `/v1/chat` (`docs/lfm25-adjudicator.md`, "Chat sessions and
+tail reads"); the page uploads the
 scenarios' specs itself.
 
 ```sh

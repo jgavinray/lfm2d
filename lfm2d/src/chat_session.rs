@@ -41,11 +41,11 @@
 //! checkpoint is a 404, never a silent rebuild: rebuilding from text would
 //! re-tokenize generated turns.
 //!
-//! The store is keyed by ids alone and typed by [`CheckpointKind`], so the
-//! planned background prefill (a chat checkpoint plus a spec's read-turn
-//! head, `docs/chat-tail-plan.md` piece 6) is another kind in the same store
-//! and budget. A chat continues, and a read forks, only from a
-//! [`CheckpointKind::ChatTurn`].
+//! The store is keyed by ids alone and typed by [`CheckpointKind`]. A chat
+//! continues, and a read forks, only from a [`CheckpointKind::ChatTurn`].
+//! Background tail prefixes (a checkpoint plus a spec's read-turn head) live
+//! in the state cache instead, so a burst of reads can never evict a
+//! checkpoint a caller holds.
 use crate::adjudicator::AdjudicatorInfo;
 use crate::chat::{Message, TemplateValue};
 use serde::{Deserialize, Serialize};

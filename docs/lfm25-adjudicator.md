@@ -588,7 +588,8 @@ DELETE /v1/opinion/specs/{id}
 
 ## Chat sessions and tail reads
 
-Pieces 3–5 of `docs/chat-tail-plan.md`, 2026-09-26. The code is
+Built 2026-09-26 (the plan's final text is in git history: `docs/chat-tail-plan.md`
+at 780c6f3). The code is
 `lfm2d/src/chat_session.rs` (store, wire types) and `Adjudicator::chat_turn`
 / `describe_then_read` in `adjudicator.rs`; the renderer is
 `lfm2d/src/chat.rs`.
