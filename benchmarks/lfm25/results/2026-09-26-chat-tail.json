@@ -1,0 +1,103 @@
+{
+ "date": "2026-09-26",
+ "scope": "Opinion reads on a live chat tail (docs/chat-tail-plan.md pieces 3-5): resumed-vs-cold drift of tail reads, and reads forked from a streaming turn. benchmarks/lfm25/chat_tail.py against one daemon built from chat-tail 5c037e9, spec demo/specs/email-triage-v2.json, --device rocm --threads 8 --adjudicator-context 4096.",
+ "conditions": "zorak gfx1151; the live lfm2d pod resident and mostly idle; run under the zorak-heavy lock and a MemAvailable >= 8 GiB guard. Four scenario chats; home_lab ran past 1100 tokens in turn 1 and was skipped (cut turns leave no checkpoint), so n is 3 chats x 2 inputs x 2 tail checkpoints.",
+ "spec": "email-triage-v2",
+ "identity": {
+  "model_id": "LFM2.5-8B-A1B-Q5_K_M",
+  "weight_hash": "eb8bd10148ea21e195502d6d6a205983ba40815302068ce72eb160684df92b3e",
+  "tokenizer_hash": "695be7802a0e4b8a81048f0ff5ebb7fc811a0ba5a6be63dbb24deb5a81096f41",
+  "context_limit": 4096,
+  "backend": "rocm",
+  "device": "rocm:gfx1151:hip7.2",
+  "candle_rev": "dda984e005314b1f1a8d82964b04061b0bb10301",
+  "dtype": "f32",
+  "sampling": "greedy; repetition_penalty=1.05; history=full"
+ },
+ "chats": [
+  {
+   "chat": "inbox_helper",
+   "turn1_tokens": 577,
+   "turn2_tokens": 165,
+   "tail_tokens": 859
+  },
+  {
+   "chat": "home_lab",
+   "cut_at_turn": 1
+  },
+  {
+   "chat": "trip_planning",
+   "turn1_tokens": 658,
+   "turn2_tokens": 309,
+   "tail_tokens": 1044
+  },
+  {
+   "chat": "garden",
+   "turn1_tokens": 550,
+   "turn2_tokens": 515,
+   "tail_tokens": 1146
+  }
+ ],
+ "reads_during_streaming_turn": {
+  "n": 6,
+  "answered_before_turn_done": 6,
+  "wall_ms": {
+   "n": 6,
+   "p50": 1646.6831504949369,
+   "p90": 2238.6866819870193,
+   "max": 2343.483484000899
+  },
+  "queue_ms": {
+   "n": 6,
+   "p50": 543.6868745,
+   "p90": 1101.9185149999998,
+   "max": 1144.2204570000001
+  },
+  "turn_done_ms": {
+   "n": 6,
+   "p50": 5521.64195899968,
+   "p90": 7406.833701999858,
+   "max": 7406.833701999858
+  }
+ },
+ "resumed_vs_cold": {
+  "reads": 12,
+  "questions": 24,
+  "same_description": 8,
+  "top_option_flips": 2,
+  "abs_logprob_nats": {
+   "n": 60,
+   "p50": 0.20728514000000006,
+   "p90": 0.885746000000001,
+   "max": 1.8198953999999992
+  },
+  "abs_prob": {
+   "n": 60,
+   "p50": 0.02377137500000004,
+   "p90": 0.15695126999999998,
+   "max": 0.28568837
+  },
+  "resumed_sequence_mass": {
+   "n": 24,
+   "p50": -0.000278100365,
+   "p90": -2.7388334e-05,
+   "max": -1.2008473e-05
+  },
+  "resumed_read_ms_after_assistant": {
+   "n": 6,
+   "p50": 1100.3361049952218,
+   "p90": 1107.252460991731,
+   "max": 1122.7251010132022
+  },
+  "cold_read_ms": {
+   "n": 12,
+   "p50": 2085.88858199073,
+   "p90": 2493.017814005725,
+   "max": 2597.2837829904165
+  }
+ },
+ "chat_moves_the_read": {
+  "questions": 24,
+  "top_option_differs_from_plain_read": 1
+ }
+}

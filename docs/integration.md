@@ -173,6 +173,47 @@ with a warm resume, send those same state bytes,
 other bytes are a cold start, not an error. The old
 `state.command` is a `400`, with no alias.
 
+**15. A read never waits out a generation (2026-09-26).** Opinion reads
+(`/v1/opinion`, `/v1/adjudicate` with `opinion: true`) and `/v1/probe`
+queue apart from generation (`/v1/adjudicate`, `/v1/chat`) and spec
+registration, and go first: one arriving while a generation runs is served
+at that generation's next prefill chunk or decoded token. The generation's
+output does not change, bit for bit; its `prefill_ms`/`decode_ms` and its
+deadline include the reads it paused for. Each queue holds eight, so a
+backlog of generations does not refuse a read, and a steady stream of
+reads can postpone a waiting generation until its deadline. Generations
+and registrations keep their arrival order.
+
+**16. A chat is its token ids; continue it only from a checkpoint
+(2026-09-26).** `POST /v1/chat` starts a chat or continues one `from` a
+checkpoint id it returned, appending user and tool turns; an assistant
+turn exists only as the daemon generated it, and a request carrying one is
+a `400`. A turn returns `checkpoint_user` (after the appended turns,
+announced before the assistant's turn is generated) and `checkpoint`
+(after the assistant's turn; `null` when the turn hit `max_tokens`). An id
+is the lowercase hex sha256 of the checkpoint's token ids as little-endian
+u32s, and the same ids always name the same state on one daemon and
+backend. Checkpoints live in memory under a byte budget
+(`--chat-checkpoint-budget-mib`), least recently used first; an evicted or
+unknown id is a `404`, never a rebuild from text, so a consumer that gets
+one starts the chat again. A daemon restart forgets every checkpoint.
+`thinking`/`content` split `text` at the reasoning region; tool calls stay
+raw in `content`.
+
+**17. A tail read is its own instrument (2026-09-26).** `/v1/opinion`
+with `context: {"checkpoint": id}` asks the spec's questions after the
+chat instead of after the spec's system turn: the spec's instructions and
+schema move into the read's own user turn. Invariants 8–11 and 14 hold for
+it, with two differences a consumer must respect. Its numbers answer a
+different prompt from a read without `context`, so thresholds fitted on
+one do not carry to the other (invariant 8); and `use_cache: false` reads
+the same bytes cold, which is a different computation, not a reference
+(resumed and cold disagree by |Δ logprob| p50 0.21 nats, max 1.8, top
+option on 2 of 24 questions; numbers below). A repeated tail read from the
+same checkpoint is identical. The response echoes `context`, and
+`rendered_sha256` covers the whole chat. A spec with `tools` cannot read a
+tail (`400`), nor can a state that begins with a newline.
+
 ## Operational numbers (measured, dated — re-measure before designing on them)
 
 The encoder-head numbers that stood here measured the retired severity
@@ -187,6 +228,15 @@ per spec, because prompt length and field count set the cost:
 - **`/embed`** (2026-09-24, lfm2d-system1, LFM2.5-Embedding-350M on ROCm):
   p50 **15.6 ms** for one input, ~120 ms for a batch of five; the embedder
   has its own worker queue beside the opinion engine's thread.
+- **Reads during generation** (2026-09-26, ROCm, `email-triage-v1`, a
+  ~1.4 s generation, n=40 per binary): a read fired mid-generation waited
+  p50 9 ms, max 175 ms in the queue, where before it waited out the
+  generation (p50 573–804 ms). `benchmarks/lfm25/results/2026-09-26-interleave.json`.
+- **Tail reads** (2026-09-26, ROCm, `email-triage-v2`, chats of 860–1150
+  tokens, n=12 reads): a resumed tail read p50 **1.10 s** on a described
+  miss, a cold one 2.09 s; two reads forked from a streaming turn's
+  `checkpoint_user` answered 6/6 before the turn finished.
+  `benchmarks/lfm25/results/2026-09-26-chat-tail.json`.
 - The encoder heads serve through ONE serial inference worker, so
   concurrent callers queue rather than parallelise; a caller that fans out
   backlogs everyone behind it.

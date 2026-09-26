@@ -3,6 +3,11 @@
 Status: in progress, 2026-09-26. Delete this doc when the work lands; its
 lasting parts move into `docs/lfm25-adjudicator.md` and `docs/integration.md`.
 
+Landed: piece 1 (interleaving worker, `docs/integration.md` invariant 15),
+piece 2 (the renderer, `lfm2d/src/chat.rs`)
+and pieces 3–5 (`POST /v1/chat`, checkpoints, tail reads; invariants 16–17,
+`docs/lfm25-adjudicator.md` "Chat sessions and tail reads").
+
 ## What we are building
 
 A side-by-side demo. On one side the user chats with LFM2.5-8B-A1B: a plain

@@ -582,6 +582,154 @@ DELETE /v1/opinion/specs/{id}
   — `newly_loaded`/`evicted` in the response's telemetry, not the wire
   body.
 
+## Chat sessions and tail reads
+
+Pieces 3–5 of `docs/chat-tail-plan.md`, 2026-09-26. The code is
+`lfm2d/src/chat_session.rs` (store, wire types) and `Adjudicator::chat_turn`
+/ `describe_then_read` in `adjudicator.rs`; the renderer is
+`lfm2d/src/chat.rs`.
+
+### `POST /v1/chat`
+
+Start a chat (`system` and/or `tools`, or neither for no system turn), or
+continue one `from` a checkpoint; append user and tool turns; the daemon
+generates the assistant's turn with open reasoning.
+
+```json
+{"system": "You are a travel planning assistant. Be concise.",
+ "tools": [ ... ],
+ "messages": [{"role": "user", "content": "Lisbon or Porto?"}],
+ "max_tokens": 2048, "timeout_ms": 120000, "stream": false}
+
+{"from": "5f1c…64 hex…", "messages": [{"role": "tool", "content": "{…}"},
+                                       {"role": "user", "content": "And by train?"}]}
+```
+
+`from` excludes `system`/`tools`. An `assistant` message is a `400`: a
+session is its token ids, and a turn the model wrote exists only as the ids
+it generated (a re-encoding of its text can differ: `on`+`zero` generated,
+`onz`+`ero` re-encoded). Every turn is rendered at the handler, so a
+forged control token or an empty turn is a `400` that never queues.
+`max_tokens` defaults to 2048; the chat plus the opening plus `max_tokens`
+must fit the context. The response (values illustrative):
+
+```json
+{"model_id": "…", "weight_hash": "…", "context_limit": 4096, "…": "…",
+ "checkpoint_user": "5f1c…", "checkpoint": "a93e…",
+ "text": "<think>\nThe user wants…\n</think>\nPorto: …",
+ "thinking": "\nThe user wants…\n", "content": "\nPorto: …",
+ "finish_reason": "stop",
+ "prompt_tokens": 859, "cached_tokens": 694, "completion_tokens": 165,
+ "checkpoint_tokens": 1027,
+ "queue_ms": 0.4, "prefill_ms": 180.2, "decode_ms": 2410.9}
+```
+
+`text` is the turn as generated, control tokens included, `<|im_end|>`
+excluded. `thinking`/`content` split it at the reasoning region, so
+`{"role": "assistant", thinking, content}` re-renders to `text`'s bytes
+(`chat_real.rs` checks this against the generated ids). Tool calls are not
+parsed; they are raw in `content`. `checkpoint` is `null` when
+`finish_reason` is `length`: closing the turn would write an
+`<|im_end|>` the model did not. `cached_tokens` is `from`'s length, or all
+of `prompt_tokens` when `checkpoint_user` was already held (a repeated
+turn is not prefilled again).
+
+`"stream": true` answers with server-sent events:
+
+```
+event: checkpoint
+data: {"event":"checkpoint","checkpoint_user":"5f1c…","prompt_tokens":859,"cached_tokens":694}
+
+event: token
+data: {"event":"token","id":124901,"text":"<think>"}
+…
+event: done
+data: {…the response above…}
+```
+
+`checkpoint` arrives once the appended turns are prefilled: from then on a
+read can fork the chat while its answer is still being generated. A
+`token`'s `text` is what it adds to the decoded turn (`""` for a token that
+ends inside a multi-byte character; the character arrives with the next).
+A refusal before the stream starts (malformed, overloaded, stopping) keeps
+its HTTP status; after the `200`, a failure is an `error` event carrying
+`{"status", "error": {"type", "message"}}`. A client that hangs up cancels
+the turn at its next pause. A chat turn is a generative job: it pauses
+before every prefill chunk and token, and reads overtake it
+(`docs/integration.md` invariant 15).
+
+### Checkpoints
+
+A checkpoint is the model state after a prefix of a chat, with its ids and
+their text, named by the lowercase hex sha256 of its ids as little-endian
+u32s. A turn leaves two: `checkpoint_user` after the appended turns (a
+prefix of everything the assistant generates next) and `checkpoint` after
+the assistant's `<|im_end|>` and the template's `\n`.
+
+The schedule is canonical, so a checkpoint's state is a function of its
+ids. Chunk boundaries change the numbers (the cold-vs-cached disagreement,
+~0.15 nats), so every path to the same ids forwards them the same way:
+each rendered segment (the head, each appended turn, the assistant's
+opening, the closing `\n`) in 128-token chunks from its own first token,
+each generated token alone as it is decoded. Starting a chat with turns A
+and B and continuing after A with B reach the same state bit for bit,
+checked across two daemons in `chat_real.rs`.
+
+The store is in memory, bounded by `--chat-checkpoint-budget-mib`
+(default 16384), least recently used evicted first. A checkpoint is
+charged an upper bound read off the GGUF: KV rounded up as the append
+allocator rounds it (a power of two, at least 128 positions), the
+convolution state, and its ids and text. Checkpoints of one chat share KV
+buffers and each is charged in full, so the store holds at least what the
+budget says. Startup refuses a budget that cannot hold one checkpoint at
+the full context. Entries carry a kind; chats and reads start only from a
+chat-turn checkpoint, which leaves room for the planned background
+prefill (piece 6) to hold "checkpoint + spec block" prefixes in the same
+store and budget. A read or a turn holds its checkpoint by reference, so an
+eviction meanwhile does not disturb it. Nothing survives a restart.
+
+### Tail reads: `/v1/opinion` with `context`
+
+```json
+{"spec": "email-triage-v2", "context": {"checkpoint": "5f1c…"},
+ "state": {"input": "I was charged twice…"}, "questions": [{"field": "verdict"}]}
+```
+
+The read renders, after the checkpoint's ids, the shape the chat-tail
+probe measured (`{"` at rank 1–2 after chats with preserved reasoning):
+
+```
+<|im_start|>user\n{spec block}\n\n{facts}{input_label}:\n{input}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n
+```
+
+where the spec block is the spec's system turn content: `system`, then
+`Return exactly one JSON object matching this schema: ` and the schema. It
+then describes and scores exactly as a plain read. The read turn is
+forwarded as two segments, split after the block's blank line, so a
+prefill of checkpoint + block (piece 6) is the same computation; a state
+that begins with a newline would merge into that blank line and is a
+`400`. A spec with `tools` is a `400`: its read turn was never measured.
+The response echoes `context`; `rendered_sha256` covers the whole chat, and
+`rendered`/`rendered_token_ids` carry it when asked. The described cache
+works unchanged, keyed by the full prompt ids. An unknown checkpoint is a
+`404`.
+
+`use_cache: false` reads the same bytes cold: from token 0 in plain
+128-token chunks, no checkpoint state, no caches. It is the instrument for
+how far a resumed read sits from a cold one, and they disagree. Measured
+2026-09-26 (`benchmarks/lfm25/chat_tail.py`, `email-triage-v2`, three chats
+of 860–1150 tokens, two inputs, after the user turn and after the
+assistant's, 12 reads, 24 questions, 60 options): |Δ logprob| p50 0.21,
+p90 0.89, max 1.82 nats; |Δ prob| p50 0.024, max 0.29; the description
+matched on 8 of 12 reads and the top option differed on 2 of 24 questions.
+The raw option mass stayed near 1 (sequence mass p50 −0.0003). Resumed
+reads took p50 1.10 s on a described miss, cold ones 2.09 s. Two reads
+fired at a streaming turn's `checkpoint` event answered 6/6 before the
+turn finished (p50 1.65 s, the second waiting for the first). The chat
+itself changed the top option from the spec's own prompt on 1 of 24
+questions. Treat a tail read as its own instrument (`docs/integration.md`
+invariant 17).
+
 ## Probe and tokenize
 
 Ruled 2026-09-23, `docs/system1-split-plan.md` (git f9ca081) "Tokenize and probe
