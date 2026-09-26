@@ -20,10 +20,12 @@
 //! chunk schedules change the numbers, so the two are not expected to agree.
 //!
 //! Ignored by default: it loads and hashes the 6 GB GGUF twice.
+//! `tests/support` names the GPU (never cpu or auto), bounds the context and
+//! arms the host-memory guard. Under the zorak-heavy lock:
 //!
-//!   LFM2_MODELS_DIR=... cargo test -p lfm2d --release --features rocm \
-//!     --test chat_real -- --ignored --nocapture
-use clap::Parser as _;
+//!   LFM2_MODELS_DIR=... flock ~/.cache/zorak-heavy.lock cargo test -p lfm2d \
+//!     --release --features rocm --test chat_real -- --ignored --test-threads=1 --nocapture
+mod support;
 use lfm2d::adjudicator::{Adjudicator, Failure, Generator, YieldPoint};
 use lfm2d::chat::{AFTER_EOS, GENERATION_PROMPT, Message};
 use lfm2d::chat_session::{ChatRequest, ChatResponse, checkpoint_id};
@@ -45,31 +47,8 @@ const EMAILS: [&str; 2] = [
      duplicate refunded today.",
 ];
 
-fn models() -> String {
-    std::env::var("LFM2_MODELS_DIR").unwrap_or_else(|_| {
-        let crate_dir = env!("CARGO_MANIFEST_DIR");
-        format!("{}/.models", crate_dir.strip_suffix("/lfm2d").unwrap_or(crate_dir))
-    })
-}
-
 fn cli() -> Cli {
-    Cli::parse_from([
-        "lfm2d",
-        "--bind-addr",
-        "127.0.0.1:0",
-        "--adjudicator-model",
-        &format!("{}/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf", models()),
-        "--adjudicator-tokenizer",
-        &format!("{}/LFM2.5-8B-A1B/tokenizer.json", models()),
-        "--opinion-spec",
-        &format!("{}/tests/fixtures/specs/{SPEC}.json", env!("CARGO_MANIFEST_DIR")),
-        "--adjudicator-context",
-        "4096",
-        // Named, never auto: the CPU MoE is a reference that would take
-        // hours and tens of GB on this GGUF.
-        "--device",
-        "rocm",
-    ])
+    support::adjudicator_cli(&[SPEC])
 }
 
 fn start(messages: &[&str], max_tokens: usize) -> ChatRequest {
@@ -157,7 +136,7 @@ fn drift(a: &Value, b: &Value) -> (Vec<f64>, bool) {
 #[test]
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF twice; minutes on a GPU host"]
 fn chat_checkpoints_and_tail_reads_on_the_real_model() {
-    let mut a1 = Adjudicator::load(&cli()).expect("load");
+    let mut a1 = support::load_adjudicator(&cli());
     let tokenizer = a1.tokenizer_clone();
     let eos = tokenizer.token_to_id("<|im_end|>").unwrap();
 
@@ -289,7 +268,7 @@ fn chat_checkpoints_and_tail_reads_on_the_real_model() {
 
     // 6. The canonical schedule: a fresh daemon STARTS a chat with A and B2
     //    and lands on the same checkpoint, whose read is bit-identical.
-    let mut a2 = Adjudicator::load(&cli()).expect("load again");
+    let mut a2 = support::load_adjudicator(&cli());
     let r3b = chat(&mut a2, &start(&[A, B2], 1));
     assert_eq!(r3b.checkpoint_user, tail3, "same ids, same id");
     assert_eq!(r3b.cached_tokens, 0, "a fresh store: computed, not held");
@@ -328,7 +307,7 @@ fn chat_checkpoints_and_tail_reads_on_the_real_model() {
 #[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host"]
 fn a_budget_too_small_for_one_turn_refuses_to_start() {
     let mut cli = cli();
-    cli.chat_checkpoint_budget_mib = 64;
-    let err = Adjudicator::load(&cli).err().expect("a 64 MiB budget cannot hold two 4096-token checkpoints");
+    cli.chat_checkpoint_budget_mib = 1;
+    let err = support::try_load_adjudicator(&cli).err().expect("1 MiB cannot hold a turn's two checkpoints");
     assert!(err.contains("--chat-checkpoint-budget-mib"), "{err}");
 }
