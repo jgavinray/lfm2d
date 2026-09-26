@@ -7,8 +7,13 @@ Binds the host's tailnet address by default (`tailscale ip -4`) and refuses a
 wildcard bind: the demos are for the tailnet, not the LAN. The daemon sends no
 CORS headers, so the pages call `/api/<daemon path>` here and this forwards
 only the routes in ALLOWED. Request bodies are never logged.
+
+A server-sent-event answer (`/v1/chat` with `stream: true`) is relayed as it
+arrives, and a browser that hangs up hangs up the upstream: the daemon cancels
+a chat turn when its client goes, and this proxy is that client.
 """
 import argparse
+import http.client
 import json
 import os
 import subprocess
@@ -28,6 +33,7 @@ ALLOWED = {
     ("POST", "/v1/opinion/specs"),
     ("POST", "/v1/opinion"),
     ("POST", "/v1/adjudicate"),
+    ("POST", "/v1/chat"),
     ("POST", "/v1/probe"),
     ("POST", "/v1/tokenize"),
     ("POST", "/embed"),
@@ -82,11 +88,47 @@ def make_server(host, port, upstream):
                                          headers={"content-type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=180) as r:
-                    self.send(r.status, r.read(), r.headers.get("content-type", "application/json"))
+                    ctype = r.headers.get("content-type", "application/json")
+                    if ctype.startswith("text/event-stream"):
+                        return self.relay(r, ctype)
+                    self.send(r.status, r.read(), ctype)
             except urllib.error.HTTPError as e:
                 self.send(e.code, e.read(), e.headers.get("content-type", "application/json"))
             except (urllib.error.URLError, OSError) as e:
                 self.error(502, f"upstream unreachable: {e}")
+
+        def relay(self, r, ctype):
+            """Pass an event stream through chunk by chunk. No length: this is
+            HTTP/1.0, so closing the connection ends the body. The socket
+            timeout bounds the wait between events (the daemon's keep-alive
+            comes every 15 s), not the whole stream."""
+            self.send_response(r.status)
+            self.send_header("content-type", ctype)
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.close_connection = True
+            while True:
+                last = False
+                try:
+                    chunk = r.read1(1 << 16)
+                except (OSError, http.client.HTTPException) as e:
+                    # The upstream broke after the 200 went out, so an HTTP
+                    # error can no longer be sent: end the stream the way the
+                    # daemon ends one that fails late, with an `error` event.
+                    body = json.dumps({"status": 502, "error": {
+                        "type": "upstream", "message": f"upstream stream broke: {e!r}"}})
+                    chunk, last = f"\n\nevent: error\ndata: {body}\n\n".encode(), True
+                if not chunk:
+                    return
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    # The reader left: returning closes the upstream (the
+                    # caller's `with`), which cancels the turn upstream.
+                    return
+                if last:
+                    return
 
         def static(self):
             raw = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)

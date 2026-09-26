@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tail Reads</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #07080c; --panel: #0e1119; --panel2: #141926; --line: #232a3a;
+    --ink: #e8ecf4; --dim: #8a93a6; --faint: #4a5368; --link: #9fd8ff;
+    --user: #1b2a44; --think: #b69cff; --think-bg: #151027; --answer: #7ee0c3;
+    --read: #ffc24a; --read-dim: #6b5520; --raw: #5fa8ff; --err: #ff6b7d;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace; --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--sans); }
+  button, select, textarea, input { font: inherit; color: inherit; }
+  header { padding: 12px 16px 10px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; }
+  header h1 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
+  header h1 a { color: inherit; text-decoration: none; }
+  header .sub { color: var(--dim); font-size: 13.5px; flex: 1 1 320px; }
+  header .model { font-family: var(--mono); font-size: 11.5px; color: var(--faint); width: 100%; }
+  main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); height: calc(100vh - 78px); min-height: 480px; }
+  section { display: flex; flex-direction: column; min-height: 0; }
+  section + section { border-left: 1px solid var(--line); }
+  .bar { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--panel); }
+  .bar h2 { margin: 0 8px 0 0; font-size: 12px; font-family: var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+  .bar h2 b { color: var(--ink); }
+  label.small { font-family: var(--mono); font-size: 11.5px; color: var(--dim); display: inline-flex; gap: 6px; align-items: center; }
+  select, input[type=number] { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; max-width: 100%; }
+  input[type=number] { width: 72px; }
+  textarea { width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: vertical; }
+  textarea:disabled { color: var(--dim); }
+  button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  button.go { background: #1d3b5c; border-color: #2f5b8a; }
+  button.fire { background: #4a3a10; border-color: var(--read-dim); color: var(--read); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  details.sys { padding: 8px 16px; border-bottom: 1px solid var(--line); }
+  details.sys summary { cursor: pointer; font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  details.sys textarea { margin-top: 6px; min-height: 64px; }
+  #log, #reads { flex: 1; overflow-y: auto; padding: 12px 16px; min-height: 0; }
+  .empty { color: var(--faint); font-size: 13.5px; }
+  .msg { margin: 0 0 14px; }
+  .msg .who { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); margin-bottom: 3px; }
+  .msg.user .body { background: var(--user); border-radius: 10px; padding: 8px 12px; white-space: pre-wrap; }
+  .msg.dropped { opacity: .45; }
+  .msg.dropped .who::after { content: " · not in the chat's history"; color: var(--err); }
+  details.think { background: var(--think-bg); border-left: 3px solid var(--think); border-radius: 0 8px 8px 0; margin: 2px 0 6px; }
+  details.think summary { cursor: pointer; padding: 5px 10px; font-family: var(--mono); font-size: 11px; color: var(--think); }
+  details.think .t { padding: 0 12px 8px; white-space: pre-wrap; font-size: 13.5px; color: #cfc2ff; font-style: italic; }
+  .answer { white-space: pre-wrap; color: var(--ink); padding: 2px 2px; }
+  .cursor::after { content: "▍"; color: var(--answer); animation: blink 1s steps(2) infinite; }
+  details.think .t.cursor::after { color: var(--think); }
+  @keyframes blink { 50% { opacity: 0; } }
+  .meta { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-top: 4px; }
+  .meta b { color: var(--dim); font-weight: 600; }
+  .meta .cp { color: var(--link); }
+  .compose { border-top: 1px solid var(--line); padding: 10px 16px 12px; background: var(--panel); display: grid; gap: 8px; }
+  .compose textarea { min-height: 58px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row .grow { flex: 1; }
+  .tail { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .tail .live { color: var(--think); }
+  .tail .cp { color: var(--link); }
+  .fields { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .fields .txt { color: var(--faint); }
+  #timeline { padding: 8px 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  #timeline:empty { display: none; }
+  .tl-h { font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
+  .tl-row { position: relative; height: 16px; margin: 3px 0; }
+  .tl-row .lab { position: absolute; left: 0; width: 64px; font-family: var(--mono); font-size: 10.5px; color: var(--dim); line-height: 16px; }
+  .tl-row .track { position: absolute; left: 68px; right: 0; top: 3px; height: 10px; background: var(--panel2); border-radius: 3px; }
+  .tl-row .seg { position: absolute; top: 0; height: 10px; border-radius: 2px; }
+  .seg.prefill { background: var(--faint); } .seg.reason { background: var(--think); } .seg.say { background: var(--answer); }
+  .seg.read { background: var(--read); } .seg.read.pending { background: repeating-linear-gradient(90deg, var(--read) 0 6px, var(--read-dim) 6px 12px); }
+  .tl-legend { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 4px; }
+  .tl-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); margin: 0 0 12px; overflow: hidden; }
+  .card.mid { border-color: var(--read-dim); box-shadow: 0 0 0 1px var(--read-dim), 0 0 22px rgba(255,194,74,.12); }
+  .card .hd { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 8px 12px; background: var(--panel2); }
+  .card .hd .n { font-family: var(--mono); font-weight: 600; color: var(--read); }
+  .card .hd .clk { margin-left: auto; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .card .ctx { font-family: var(--mono); font-size: 11px; color: var(--dim); padding: 6px 12px 0; }
+  .card .ctx .cp { color: var(--link); }
+  .badge { margin: 8px 12px 0; padding: 6px 10px; border-radius: 6px; font-size: 13px; background: #2a2208; color: var(--read); border: 1px solid var(--read-dim); }
+  .badge.after { background: var(--panel2); color: var(--dim); border-color: var(--line); }
+  .card .input { padding: 6px 12px 0; font-size: 13px; color: var(--dim); white-space: pre-wrap; }
+  .card .input b { font-family: var(--mono); font-size: 11px; font-weight: 600; }
+  .described { padding: 6px 12px 0; display: grid; gap: 2px; }
+  .described div { font-size: 13.5px; } .described b { font-family: var(--mono); font-size: 11.5px; color: var(--dim); font-weight: 600; }
+  .ans { padding: 8px 12px 2px; }
+  .ans .f { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
+  .ans .f b { font-family: var(--mono); font-size: 12.5px; }
+  .ans .f .mass { font-family: var(--mono); font-size: 11px; color: var(--raw); }
+  .opts { display: grid; grid-template-columns: max-content 1fr 1fr; gap: 3px 10px; align-items: center; margin-top: 5px; font-family: var(--mono); font-size: 11.5px; }
+  .opts .h { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .opts .o { color: var(--ink); }
+  .meter { position: relative; height: 16px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
+  .meter span { position: absolute; inset: 0 auto 0 0; }
+  .meter.prob span { background: #7a6a3a; } .meter.raw span { background: #2c4f7c; }
+  .meter em { position: relative; font-style: normal; padding-left: 5px; line-height: 16px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .card .ft { font-family: var(--mono); font-size: 10.5px; color: var(--faint); padding: 8px 12px 9px; line-height: 1.55; }
+  .card .ft b { color: var(--dim); font-weight: 600; }
+  .card .err, .errline { color: var(--err); font-family: var(--mono); font-size: 12px; padding: 8px 12px; white-space: pre-wrap; }
+  .note { font-size: 12.5px; color: var(--dim); }
+  @media (max-width: 860px) {
+    main { display: block; height: auto; }
+    section + section { border-left: 0; border-top: 1px solid var(--line); }
+    #log { max-height: 62vh; min-height: 200px; }
+    #reads { overflow: visible; }
+    .opts { grid-template-columns: max-content 1fr; }
+    .opts .rawcol { grid-column: 2; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/">Tail Reads</a></h1>
+  <div class="sub">Chat with the model on the left (System 2: it reasons out loud, and its reasoning stays in the chat's history). On the right, System 1 reads fork the chat's tail and answer a spec's questions, even while the chat is still reasoning.</div>
+  <div class="model" id="model">connecting…</div>
+</header>
+<main>
+  <section id="chat">
+    <div class="bar">
+      <h2>chat <b>System 2</b></h2>
+      <label class="small">scenario <select id="scenario"></select></label>
+      <label class="small">max tokens <input type="number" id="maxtok" min="16" max="4096" step="64" value="1024"></label>
+      <span class="grow"></span>
+      <button id="newchat">new chat</button>
+    </div>
+    <details class="sys" id="sysbox" open>
+      <summary id="syssum">system prompt (editable until the first message)</summary>
+      <textarea id="system" rows="3" placeholder="no system turn"></textarea>
+    </details>
+    <div id="log"><p class="empty">Pick a scenario, edit its system prompt if you like, and send the first message.</p></div>
+    <div class="compose">
+      <textarea id="msg" rows="3" placeholder="your message (Enter sends, Shift+Enter for a new line)"></textarea>
+      <div class="row">
+        <span class="tail grow" id="chatstatus"></span>
+        <button id="stop" disabled>stop</button>
+        <button id="send" class="go">send</button>
+      </div>
+    </div>
+  </section>
+  <section id="side">
+    <div class="bar">
+      <h2>reads of the tail <b>System 1</b></h2>
+      <label class="small">spec <select id="spec"></select></label>
+    </div>
+    <div id="timeline"></div>
+    <div id="reads"><p class="empty">A read asks the spec's questions about your input, in the context of the chat so far. Fire one while the chat is reasoning to see it answer first.</p></div>
+    <div class="compose">
+      <div class="fields" id="fields"></div>
+      <label class="small" id="inlabel" for="rin">input</label>
+      <textarea id="rin" rows="3" placeholder="the input to read (Ctrl+Enter fires)"></textarea>
+      <div class="row">
+        <span class="tail grow" id="tail">tail: no chat yet</span>
+        <label class="small" title="read the input with the spec's own prompt, ignoring the chat"><input type="checkbox" id="noctx"> without the chat</label>
+        <button id="fire" class="fire" disabled>read the tail</button>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+// Chat turns go to /v1/chat (streamed, generative); reads go to /v1/opinion
+// with context.checkpoint (opinion reads). The spec's fields, options and
+// input label come from the menu at load, never from this page. A read
+// returns no winner and this page picks none: every option is drawn the same.
+const SCENARIOS = "/tail.json";
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const now = () => performance.now();
+const short = id => id ? id.slice(0, 10) + "…" : "—";
+const secs = ms => ms >= 10000 ? (ms / 1000).toFixed(1) + " s" : ms >= 1000 ? (ms / 1000).toFixed(2) + " s" : Math.round(ms) + " ms";
+const pct = p => p >= 0.9995 ? ">99.9%" : p < 0.0005 ? "<0.1%" : (100 * p).toFixed(1) + "%";
+
+async function api(path, body) {
+  const init = body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
+  const r = await fetch("/api" + path, init);
+  const j = await r.json().catch(() => ({ error: { message: "non-JSON answer" } }));
+  if (!r.ok) throw failure(r.status, j.error?.message ?? JSON.stringify(j));
+  return j;
+}
+const failure = (status, message) => Object.assign(new Error(`${status} ${message}`), { status, detail: message });
+
+// `text` split as the daemon splits it (chat_session::split_reasoning):
+// a region opening the turn, closed by the first `</think>`.
+function splitReasoning(text) {
+  if (!text.startsWith("<think>")) return [null, text];
+  const rest = text.slice("<think>".length), i = rest.indexOf("</think>");
+  return i < 0 ? [rest, null] : [rest.slice(0, i), rest.slice(i + "</think>".length)];
+}
+
+// Server-sent events off a fetch body: yields {event, data}.
+async function* events(body) {
+  const reader = body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const raw = buf.slice(0, i); buf = buf.slice(i + 2);
+      let event = "message"; const data = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith(":")) continue;                        // keep-alive
+        const c = line.indexOf(":"), k = c < 0 ? line : line.slice(0, c);
+        const v = c < 0 ? "" : line.slice(c + 1).replace(/^ /, "");
+        if (k === "event") event = v; else if (k === "data") data.push(v);
+      }
+      if (data.length) yield { event, data: JSON.parse(data.join("\n")) };
+    }
+  }
+}
+
+// ---------- state ----------
+const S = {
+  scenarios: [], specs: [], spec: null,
+  from: null,          // the checkpoint the next turn continues: after the last finished assistant turn
+  started: false,      // a chat exists (the system prompt is fixed)
+  turns: [], current: null, ctrl: null,
+  reads: [], raf: 0,
+};
+
+// The tail a read forks right now: the running turn's checkpoint_user once
+// its prefill is done (mid-turn), else the end of the last finished turn.
+function tail() {
+  const c = S.current;
+  if (c && c.cpUser) return { id: c.cpUser, where: `after your message in turn ${c.n}`, turn: c, mid: true };
+  if (S.from) { const t = S.turns.findLast(t => t.cp === S.from); return { id: S.from, where: `after the assistant's turn ${t?.n ?? "?"}`, turn: null, mid: false }; }
+  return null;
+}
+
+// The daemon no longer holds the chat's checkpoint (evicted under its budget,
+// or restarted): a 404 naming it. Never rebuilt from text (invariant 16), so
+// the next message starts the chat again.
+const gone = (e, id) => e?.status === 404 && !!id && String(e.detail ?? "").includes(id);
+function chatGone() {
+  S.from = null; S.started = false; $("system").disabled = false;
+  $("syssum").textContent = "system prompt (editable until the first message)";
+  $("chatstatus").textContent = "the daemon no longer holds this chat (evicted or restarted): the next message starts a new one";
+  showTail();
+}
+
+function showTail() {
+  const t = tail(), box = $("tail");
+  box.textContent = "";
+  if ($("noctx").checked) box.append("tail: none, the spec's own prompt");
+  else if (!t) box.append(S.current ? "tail: waiting for the first turn's prefill…" : "tail: no chat yet (a read now uses the spec's own prompt)");
+  else {
+    box.append("tail: " + t.where + " ");
+    box.append(el("span", "cp", short(t.id)));
+    if (t.mid) box.append(" ", el("span", "live", "· the model is still generating"));
+  }
+  $("fire").disabled = !S.spec || !$("rin").value.trim() || !S.spec.questions.length;
+}
+
+// ---------- chat ----------
+function scenarioPicked() {
+  const s = S.scenarios[$("scenario").value];
+  if (S.started) return;
+  $("system").value = s.system; $("msg").value = s.first; $("rin").value = s.read; showTail();
+}
+
+function newChat() {
+  if (S.ctrl) S.ctrl.abort();
+  Object.assign(S, { from: null, started: false, turns: [], current: null, ctrl: null, reads: [] });
+  $("send").disabled = false; $("stop").disabled = true;
+  $("log").replaceChildren(el("p", "empty", "New chat. Send the first message."));
+  $("reads").replaceChildren(el("p", "empty", "No reads yet."));
+  $("timeline").replaceChildren();
+  $("system").disabled = false; $("syssum").textContent = "system prompt (editable until the first message)";
+  $("sysbox").open = true; $("chatstatus").textContent = "";
+  scenarioPicked(); showTail();
+}
+
+function turnView(turn) {
+  const wrap = el("div");
+  const u = el("div", "msg user"); u.append(el("div", "who", `you · turn ${turn.n}`), el("div", "body", turn.user));
+  const a = el("div", "msg assistant"); a.append(el("div", "who", "LFM2.5-8B-A1B"));
+  const think = el("details", "think"); think.open = true;
+  const sum = el("summary", null, "reasoning"); const t = el("div", "t cursor");
+  think.append(sum, t); think.hidden = true;
+  const ans = el("div", "answer"), meta = el("div", "meta", "prefilling your message…");
+  a.append(think, ans, meta);
+  wrap.append(u, a);
+  Object.assign(turn, { view: { wrap, u, a, think, sum, t, ans, meta } });
+  return wrap;
+}
+
+function paintTurn(turn) {
+  const v = turn.view, [thinking, content] = splitReasoning(turn.text);
+  const live = !turn.tDone;
+  v.think.hidden = thinking === null;
+  if (thinking !== null) {
+    v.t.textContent = thinking.replace(/^\n+/, "");
+    v.t.classList.toggle("cursor", live && content === null);
+    v.sum.textContent = content === null && live ? `reasoning… (${turn.tokens} tokens so far)` : "reasoning (kept in the chat's history)";
+  }
+  v.ans.textContent = (content ?? "").replace(/^\n+/, "");
+  v.ans.classList.toggle("cursor", live && content !== null);
+}
+
+function metaLine(turn, extra) {
+  const m = turn.view.meta; m.textContent = "";
+  const d = turn.done;
+  if (d) {
+    m.append(el("b", null, `${d.prompt_tokens}`), ` prompt (${d.cached_tokens} resident) · `,
+             el("b", null, `+${d.completion_tokens}`), ` tokens · prefill ${secs(d.prefill_ms)} · decode ${secs(d.decode_ms)} · ${d.finish_reason} · checkpoint `,
+             el("span", "cp", short(d.checkpoint)));
+  } else if (turn.cpUser) {
+    m.append(`prefilled ${turn.prompt_tokens} tokens (${turn.cached_tokens} resident) · checkpoint_user `, el("span", "cp", short(turn.cpUser)),
+             ` · ${turn.tokens} tokens`);
+  }
+  if (extra) m.append(extra);
+}
+
+async function send() {
+  const text = $("msg").value.trim();
+  if (!text || S.current) return;
+  const body = { messages: [{ role: "user", content: text }], max_tokens: +$("maxtok").value || 1024, timeout_ms: 600000, stream: true };
+  if (S.from) body.from = S.from;
+  else if (S.started) { $("chatstatus").textContent = "this chat has no checkpoint to continue from: start a new chat"; return; }
+  else if ($("system").value.trim()) body.system = $("system").value;
+
+  if (!S.started) { S.turns = []; $("log").replaceChildren(); $("reads").querySelector(".empty")?.remove(); }
+  S.started = true; $("system").disabled = true; $("syssum").textContent = "system prompt (fixed for this chat)"; $("sysbox").open = false;
+  for (const t of S.turns) if (t.view) t.view.think.open = false;
+  const turn = { n: S.turns.length + 1, user: text, text: "", tokens: 0, t0: now(), tCheckpoint: null, tThinkEnd: null, tDone: null, reads: [] };
+  S.turns.push(turn); S.current = turn; S.ctrl = new AbortController();
+  $("log").append(turnView(turn)); scrollLog(true);
+  $("msg").value = ""; $("send").disabled = true; $("stop").disabled = false;
+  $("chatstatus").textContent = `turn ${turn.n}: prefilling…`;
+  showTail(); tick();
+
+  let ended = false;
+  try {
+    const r = await fetch("/api/v1/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: S.ctrl.signal });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw failure(r.status, j.error?.message ?? "chat refused"); }
+    for await (const { event, data } of events(r.body)) {
+      if (event === "checkpoint") {
+        Object.assign(turn, { cpUser: data.checkpoint_user, prompt_tokens: data.prompt_tokens, cached_tokens: data.cached_tokens, tCheckpoint: now() });
+        $("chatstatus").textContent = `turn ${turn.n}: generating — fire a read now`;
+        metaLine(turn); showTail();
+      } else if (event === "token") {
+        turn.text += data.text; turn.tokens++;
+        if (turn.tThinkEnd === null && turn.text.includes("</think>")) turn.tThinkEnd = now();
+        schedulePaint(turn);
+      } else if (event === "done") {
+        turn.done = data; turn.text = data.text; ended = true;
+        break;
+      } else if (event === "error") {
+        throw failure(data.status, data.error?.message ?? JSON.stringify(data));
+      }
+    }
+    if (!ended) throw new Error("the stream ended without a done event");
+  } catch (e) {
+    turn.error = S.ctrl?.signal.aborted || !S.turns.includes(turn) ? "stopped" : String(e.message ?? e);
+    turn.gone = gone(e, body.from);
+  } finally {
+    turn.tDone = now();
+    if (!S.turns.includes(turn)) return;   // "new chat" dropped this turn while it ran
+    S.current = null; S.ctrl = null;
+    if (turn.tThinkEnd === null && turn.done?.content != null) turn.tThinkEnd = turn.tDone;
+    turn.cp = turn.done?.checkpoint ?? null;
+    paintTurn(turn);
+    if (turn.done?.checkpoint) {
+      S.from = turn.done.checkpoint; metaLine(turn);
+      $("chatstatus").textContent = `turn ${turn.n} done in ${secs(turn.tDone - turn.t0)}`;
+    } else {
+      // No checkpoint after this turn (cut off, stopped or failed): the next
+      // turn continues from the last one that finished.
+      turn.view.u.classList.add("dropped"); turn.view.a.classList.add("dropped");
+      const why = turn.error ?? (turn.done?.finish_reason === "length" ? "cut off by max tokens: no checkpoint after it" : "no checkpoint");
+      metaLine(turn, el("div", "errline", why));
+      $("chatstatus").textContent = S.from ? `turn ${turn.n} is not in the history; the next message continues after turn ${S.turns.findLast(t => t.cp === S.from)?.n}` : "no checkpoint yet: the next message starts over";
+      if (turn.gone) chatGone();
+      else if (!S.from) S.started = false, $("system").disabled = false;
+    }
+    $("send").disabled = false; $("stop").disabled = true;
+    for (const rd of turn.reads) paintRead(rd);
+    showTail(); scrollLog();
+  }
+}
+
+let paintPending = null;
+function schedulePaint(turn) {
+  if (paintPending) return;
+  paintPending = requestAnimationFrame(() => { paintPending = null; const stick = nearBottom(); paintTurn(turn); metaLine(turn); showTail(); scrollLog(stick); });
+}
+const nearBottom = () => { const l = $("log"); return l.scrollHeight - l.scrollTop - l.clientHeight < 80; };
+function scrollLog(force) { const l = $("log"); if (force === undefined || force) l.scrollTop = l.scrollHeight; }
+
+// ---------- reads ----------
+function specPicked() {
+  const m = S.specs[$("spec").value];
+  if (!m) { S.spec = null; showTail(); return; }
+  const choice = m.fields.filter(f => f.kind === "choice");
+  S.spec = { menu: m, questions: choice.map(f => f.field) };
+  const box = $("fields"); box.replaceChildren();
+  for (const f of m.fields) {
+    if (f.kind === "choice") {
+      const lab = el("label", "small"), cb = el("input"); cb.type = "checkbox"; cb.checked = true; cb.dataset.field = f.field;
+      cb.onchange = () => { S.spec.questions = [...box.querySelectorAll("input:checked")].map(c => c.dataset.field); showTail(); };
+      lab.append(cb, `${f.field} (${f.options.length})`); box.append(lab);
+    } else box.append(el("span", "small txt", `${f.field}: written`));
+  }
+  $("inlabel").textContent = m.input_label + ":";
+  showTail();
+}
+
+async function fire() {
+  const input = $("rin").value;
+  if (!S.spec || !input.trim() || !S.spec.questions.length) return;
+  const t = $("noctx").checked ? null : tail();
+  const body = { spec: S.spec.menu.id, state: { input }, questions: S.spec.questions.map(field => ({ field })), use_cache: true, timeout_ms: 120000 };
+  if (t) body.context = { checkpoint: t.id };
+  // The turn this read races, whether or not its checkpoint is out yet.
+  const race = S.current;
+  const rd = { n: S.reads.length + 1, input, label: S.spec.menu.input_label, spec: S.spec.menu, tail: t, race, t0: now(), t1: null,
+               firedAt: race ? race.tokens : null, answeredAt: null, beat: null };
+  if (race) race.reads.push(rd);
+  S.reads.push(rd);
+  $("reads").querySelector(".empty")?.remove();
+  $("reads").prepend(readView(rd)); paintRead(rd); tick();
+  try { rd.r = await api("/v1/opinion", body); }
+  catch (e) { rd.error = String(e.message ?? e); if (rd.tail && rd.tail.id === S.from && gone(e, S.from)) chatGone(); }
+  rd.t1 = now();
+  if (race) { rd.answeredAt = race.tokens; rd.beat = !race.tDone; }
+  paintRead(rd);
+}
+
+function readView(rd) {
+  const c = el("div", "card");
+  const hd = el("div", "hd"), clk = el("span", "clk");
+  hd.append(el("span", "n", `#${rd.n}`), el("span", "small", rd.spec.spec === rd.spec.id ? `spec ${short(rd.spec.id)}` : rd.spec.spec), clk);
+  const ctx = el("div", "ctx");
+  if (rd.tail) ctx.append(`tail ${rd.tail.where} · `, el("span", "cp", short(rd.tail.id)));
+  else ctx.append("no chat: the spec's own prompt");
+  if (rd.race && rd.tail && !rd.tail.mid) ctx.append(` · fired while turn ${rd.race.n} was prefilling, so it reads the tail before your message`);
+  const inp = el("div", "input"); inp.append(el("b", null, rd.label + ": "), rd.input);
+  const badge = el("div", "badge"); badge.hidden = true;
+  const body = el("div");
+  c.append(hd, ctx, badge, inp, body);
+  rd.view = { c, clk, badge, body };
+  return c;
+}
+
+function paintRead(rd) {
+  const v = rd.view;
+  if (!v) return;
+  v.clk.textContent = rd.t1 ? secs(rd.t1 - rd.t0) : `reading… ${secs(now() - rd.t0)}`;
+  // The race: did this read answer before the turn it was fired into finished?
+  if (rd.race) {
+    const t = rd.race; v.badge.hidden = false; v.badge.className = "badge";
+    if (!rd.t1) v.badge.textContent = `fired at token ${rd.firedAt} of turn ${t.n}; the turn is still generating`;
+    else if (rd.beat) {
+      v.c.classList.add("mid");
+      // Reads queue ahead of generation (docs/integration.md invariant 15):
+      // the turn pauses at its next token while the read runs.
+      v.badge.textContent = `answered at token ${rd.answeredAt} of turn ${t.n}, fired at token ${rd.firedAt}: the model was still ${t.tThinkEnd && t.tThinkEnd < rd.t1 ? "answering" : "reasoning"}.` +
+        ` The chat paused for the read (${rd.answeredAt - rd.firedAt} tokens meanwhile).` +
+        (t.tDone ? ` The turn finished ${secs(t.tDone - rd.t1)} later.` : "");
+    } else { v.badge.className = "badge after"; v.badge.textContent = `turn ${t.n} finished ${secs(rd.t1 - t.tDone)} before this read answered`; }
+  }
+  if (!rd.t1 || rd.painted) return;
+  rd.painted = true;
+  v.body.replaceChildren();
+  if (rd.error) { v.body.append(el("div", "err", rd.error)); return; }
+  const r = rd.r;
+  if (r.described.length) {
+    const d = el("div", "described");
+    for (const f of r.described) { const row = el("div"); row.append(el("b", null, f.field + " "), typeof f.value === "string" ? f.value : JSON.stringify(f.value)); d.append(row); }
+    v.body.append(d);
+  }
+  for (const a of r.answers) {
+    const box = el("div", "ans"), f = el("div", "f");
+    f.append(el("b", null, a.field), el("span", "mass", `raw mass on these options ${pct(Math.exp(a.sequence_mass))} (sequence) · ${pct(Math.exp(a.first_token_mass))} (first token)`));
+    const g = el("div", "opts");
+    g.append(el("span", "h", "option"), el("span", "h", "prob (renormalised)"), el("span", "h rawcol", "raw p (full vocabulary)"));
+    for (const o of a.options) {
+      const raw = Math.exp(o.logprob);
+      g.append(el("span", "o", o.option), meter("prob", o.prob, pct(o.prob)), meter("raw rawcol", raw, `${pct(raw)} · ${o.logprob.toFixed(2)}`));
+    }
+    box.append(f, g); v.body.append(box);
+  }
+  const ft = el("div", "ft");
+  ft.append("queue ", el("b", null, secs(r.queue_ms)), " · prefill ", el("b", null, secs(r.prefill_ms)), " · describe ", el("b", null, secs(r.describe_ms)),
+            " · read ", el("b", null, secs(r.read_ms)), ` · prompt ${r.prompt_tokens} tokens (${r.cached_tokens} resident), described ${r.described_tokens}`,
+            el("br"), `cache prefix ${r.cache.prefix} / state ${r.cache.state} / described ${r.cache.described} · rendered_sha256 ${short(r.answers.at(-1)?.rendered_sha256)}`,
+            r.context ? ` · context ${short(r.context.checkpoint)}` : " · no context");
+  v.body.append(ft);
+}
+function meter(cls, p, label) { const m = el("div", "meter " + cls), s = el("span"); s.style.width = (100 * Math.max(0, Math.min(1, p))).toFixed(2) + "%"; m.append(s, el("em", null, label)); return m; }
+
+// ---------- timeline: the latest turn and the reads fired into it ----------
+function paintTimeline() {
+  const turn = S.current ?? S.turns.findLast(t => t.reads.length) ?? null;
+  const box = $("timeline");
+  if (!turn) { box.replaceChildren(); return; }
+  const t0 = turn.t0, end = Math.max(turn.tDone ?? now(), ...turn.reads.map(r => r.t1 ?? now())), span = Math.max(end - t0, 1);
+  const x = t => (100 * (t - t0) / span).toFixed(2) + "%", w = (a, b) => (100 * Math.max(b - a, 0) / span).toFixed(2) + "%";
+  const seg = (cls, a, b) => { const s = el("div", "seg " + cls); s.style.left = x(a); s.style.width = w(a, b); return s; };
+  const row = (label, ...segs) => { const r = el("div", "tl-row"), tr = el("div", "track"); tr.append(...segs); r.append(el("span", "lab", label), tr); return r; };
+  const tNow = turn.tDone ?? now(), cp = turn.tCheckpoint ?? tNow, te = turn.tThinkEnd ?? tNow;
+  const segs = [seg("prefill", t0, cp)];
+  if (turn.tCheckpoint) segs.push(seg("reason", cp, Math.min(te, tNow)));
+  if (turn.tThinkEnd) segs.push(seg("say", te, tNow));
+  const rows = [el("div", "tl-h", `turn ${turn.n} · ${secs(tNow - t0)}${turn.tDone ? "" : " and counting"}`), row(`turn ${turn.n}`, ...segs)];
+  for (const rd of turn.reads) rows.push(row(`read #${rd.n}`, seg("read" + (rd.t1 ? "" : " pending"), rd.t0, rd.t1 ?? now())));
+  const leg = el("div", "tl-legend");
+  for (const [c, n] of [["var(--faint)", "prefill"], ["var(--think)", "reasoning"], ["var(--answer)", "answer"], ["var(--read)", "read"]]) { const i = el("i"); i.style.background = c; leg.append(i, n); }
+  rows.push(leg);
+  box.replaceChildren(...rows);
+}
+
+// One animation loop while anything is in flight.
+function tick() {
+  if (S.raf) return;
+  const loop = () => {
+    paintTimeline();
+    for (const rd of S.reads) if (!rd.t1 || (rd.race && !rd.race.tDone)) paintRead(rd);
+    S.raf = (S.current || S.reads.some(r => !r.t1)) ? requestAnimationFrame(loop) : 0;
+    if (!S.raf) paintTimeline();
+  };
+  S.raf = requestAnimationFrame(loop);
+}
+
+// ---------- boot ----------
+async function boot() {
+  try {
+    const [info, specs, sc] = await Promise.all([api("/v1/adjudicator"), api("/v1/opinion/specs"), fetch(SCENARIOS).then(r => r.json())]);
+    $("model").textContent = `${info.model_id} · ${info.backend} ${info.device} · context ${info.context_limit} tokens · candle ${String(info.candle_rev).slice(0, 12)} · every number on this page is live`;
+    S.scenarios = sc.scenarios;
+    $("scenario").replaceChildren(...S.scenarios.map((s, i) => { const o = el("option", null, s.name); o.value = i; return o; }));
+    S.specs = specs.filter(m => m.fields.some(f => f.kind === "choice"));
+    if (!S.specs.length) throw new Error("no loaded spec has a choice field: start the daemon with --opinion-spec");
+    $("spec").replaceChildren(...S.specs.map((m, i) => { const o = el("option", null, m.spec === m.id ? `uploaded ${short(m.id)}` : m.spec); o.value = i; return o; }));
+    specPicked(); scenarioPicked();
+  } catch (e) {
+    $("model").textContent = ""; $("model").append(el("span", "errline", "cannot start: " + (e.message ?? e)));
+  }
+}
+$("scenario").onchange = scenarioPicked;
+$("spec").onchange = specPicked;
+$("newchat").onclick = newChat;
+$("send").onclick = send;
+$("stop").onclick = () => S.ctrl?.abort();
+$("fire").onclick = fire;
+$("noctx").onchange = showTail;
+$("rin").oninput = showTail;
+$("msg").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
+$("rin").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); fire(); } };
+boot();
+</script>
+</body>
+</html>
