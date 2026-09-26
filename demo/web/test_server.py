@@ -291,7 +291,8 @@ class PageTests(unittest.TestCase):
                     self.assertFalse(i["fits"] and i["chat_only"], "chat_only marks an item the chat rules out")
                 # a feed the filter should split, not one it keeps or drops wholesale
                 kept = sum(i["fits"] for i in items)
-                self.assertTrue(0.3 <= kept / len(items) <= 0.7, kept)
+                # a minority fits (Amy, 2026-09-26: "only a minority should fit"), but not none
+                self.assertTrue(0.2 <= kept / len(items) <= 0.7, kept)
                 self.assertGreaterEqual(sum(i["chat_only"] for i in items), 3)
                 # the follow-up changes what fits, visibly, and the feed still splits after it
                 self.assertTrue(s["follow_up"].strip())
@@ -304,7 +305,7 @@ class PageTests(unittest.TestCase):
                 self.assertGreaterEqual(len(flips), 3)
                 self.assertTrue({i["fits"] for i in flips} == {True, False}, "flips run both ways")
                 after = sum(i["fits_after_follow_up"] for i in items)
-                self.assertTrue(0.25 <= after / len(items) <= 0.75, after)
+                self.assertTrue(0.2 <= after / len(items) <= 0.75, after)
 
     def test_tail_page_reads_its_vocabulary_from_the_scenario_and_the_menu(self):
         page = (Path(server.__file__).parent / "static" / "tail.html").read_text()

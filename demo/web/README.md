@@ -105,8 +105,9 @@ reasons). A round of 14 re-reads at a turn's end took 18-32 s of wall time,
 two in flight, every read but the first starting from a tail prefix. Read
 without the chat, the same feed kept 13 of 14. On the page, travel
 at `T1✓` → `T2✓` moved both stopovers keep → drop (0.84 → 0.15, 0.74 →
-0.22) and the $420 suite drop → keep (0.29 → 0.68); home-lab moved the
-three 256 GB servers keep → maybe and the no-rails 384 GB one drop → keep.
+0.22) and the $420 suite drop → keep (0.29 → 0.68). Home-lab (the second
+feed, below) moved the 384 GB Dell maybe → keep (0.63 → 0.96) but kept both
+non-Dells after "it has to be a Dell".
 The round after the hand-off (`T3✓`) reads against a chat that now holds
 the kept list and the model's pick, and it drifts (the Newark stopover rose
 back to 0.62): a later tail is a different prompt.
@@ -146,7 +147,7 @@ benchmark. The v1 specs and every travel variant are in
   of 7); with neither but the pass/fail question, 0.92 with every offer
   passing. Fourteen items and one chat: differences this size are within
   what a draw moves. Tuned on the travel feed, so its numbers are not a test.
-- **Confirm, home-lab (`homelab-quote-v2`, same pattern, not tuned):**
+- **Confirm, the first home-lab feed (`homelab-quote-v2`, same pattern, not tuned; the feed has since been replaced):**
   AUC 0.67 mid-turn, 0.93 after the assistant's turn (the assistant's
   reasoning restates the requirements), 0.48 without the chat. Mid-turn it
   caught missing rails, 91% seller feedback and the gift-card scam and let
@@ -161,9 +162,55 @@ benchmark. The v1 specs and every travel variant are in
   5 of 6 now-fitting kept at the default thresholds, P moved the right way
   on 4 of 5 flips (the red-eye stayed kept, 0.69 → 0.63); at turn 2's
   `checkpoint_user` AUC was also 1.000 but every P shifted up and only 2 of
-  5 flips were followed. Home-lab, 4 flips: followed 4 of 4 at both
-  positions, AUC 0.92 after turn 2. The restatement field quoted a mix of
-  both turns ("nonstop only, at most one stop each way"). One chat each.
+  5 flips were followed. The first home-lab feed, 4 flips: followed 4 of 4
+  at both positions, AUC 0.92 after turn 2. The restatement field quoted a
+  mix of both turns ("nonstop only, at most one stop each way"). One chat
+  each.
+- **The second home-lab feed** (2026-09-26, after Amy: "most of the server
+  options in the server demo seem to be valid? ... their prices should range
+  from completes scam to realistic, $5000-10000 (RAM is really expensive
+  rn)"). The buyer asks for at least 512 GB of DDR5 under $9,000 shipped to
+  Toronto; 4 of 16 quotes fit ($7,300-8,900). The rest fail for varied
+  reasons: over budget, DDR4 or too little RAM, no rails, US-only shipping,
+  a 1U box, a weak seller, and five scams from a $400 "brand-new R760" to
+  wire-or-gift-cards, a day-old account, a too-good bundle and a quote that
+  tells the screener to pass it. The follow-up ("384 GB is enough, up to
+  $10,000, but it has to be a Dell") flips 4 items both ways. A new feed,
+  looked at while it was written; `homelab-quote-v2` unchanged, one chat,
+  raw mass 99.8-100% on every read:
+
+  | read position | AUC | fitting kept (keep ≥ 0.7) | breaking dropped (< 0.3) | flips followed |
+  |---|---|---|---|---|
+  | turn 1, mid-turn | 0.875 | 4 / 4 | 8 / 12 | |
+  | turn 1, after the assistant | 1.000 | 4 / 4 | 10 / 12 | |
+  | turn 2, mid-turn | 0.729 | 3 / 4 | 7 / 12 | 2 / 4 |
+  | turn 2, after the assistant | 0.729 | 3 / 4 | 6 / 12 | 2 / 4 |
+  | without the chat | 0.604 | 2 / 4 | 1 / 12 | |
+
+  Mid-turn in turn 1 it passed the wire-only scam (0.94), the too-good
+  bundle (0.95) and US-only shipping (0.96); after the assistant's turn all
+  three fell (0.07, 0.28, 0.71). In turn 2 it followed "384 GB is enough"
+  (the 384 GB Dell 0.63 → 0.96) and nothing else: both non-Dells stayed at
+  0.93-0.97, the 1 TB Dell at $9,780 stayed at 0.000, and the looser
+  request lifted three breaking quotes toward maybe.
+- **Why turn 2 does not land: the restatement retrieves the user message
+  most like the item, not the latest one.** At `T2✓` the `asked` field
+  quoted the buyer's first message word for word for every quote but the
+  384 GB Dell, although the follow-up is in the rendered read. Six changes
+  did not fix it (the spec variants are in
+  `benchmarks/system1/specs/tail/homelab-quote-v3*`):
+  requirements "as they stand now, … give the later one"; quoting the
+  latest message first (it quoted the quote, an invented listing, or the
+  first message); a rule that "the later one counts"; a field for what
+  changed ("None" every time); the buyer's messages as `facts` (every
+  quote, fitting or not, fell to 0.59-0.73: no separation); and "apply
+  every change from their later messages". A follow-up that restates the
+  full list ("a used 2U Dell … at least 384 GB … under $10,000") was quoted
+  only for the 384 GB Dell, the quote that shares its words; the HPE and
+  the Supermicro still got the first message. A screen that must follow a
+  change of mind needs the current requirements handed to it (by the app or
+  the generative side), not retrieved by the read; that is a design
+  question, not a wording one.
 - **The chat is what carries it:** without the chat both specs read at
   chance. A tail read after the assistant's turn reads a different prompt
   from one at `checkpoint_user`, so its numbers are its own: the same offer
