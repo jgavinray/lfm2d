@@ -59,22 +59,57 @@ what the context has left and says so.
   that is stopped, fails or hits max tokens leaves no checkpoint and is
   greyed out.
 - **Right, the feed.** It starts when the first turn's `checkpoint` event
-  arrives: the agents answer once there is a request. Each item is read with
-  `/v1/opinion` and `context.checkpoint` set to the freshest tail at that
-  moment (the running turn's `checkpoint_user`, else the end of the last
-  finished turn), two reads at a time. A card shows every option's
-  renormalised `prob` beside its raw probability and the answer set's raw
-  `sequence_mass`, the fields the read wrote first, the timings, and which
-  tail it read. No option is marked as the answer. The filter is the user's:
-  *keep at* and *drop below* thresholds on the scenario's option's `prob`,
-  with the band between them held as *maybe*, and a read whose raw mass is
-  under 50% is never kept or dropped. The thresholds re-bin without
-  re-reading; *re-read all* reads every item against the tail as it is now
-  (say after you change your mind in the chat); *without the chat* reads
-  against the spec's own prompt, which never saw what you asked for;
-  *author's notes* shows the intended answer. **hand the kept to the chat**
-  puts the kept items into your next message, so the model reasons over
-  only what the screen let through.
+  arrives: the agents answer once there is a request. Each item is one
+  compact row: the agent, a short title, one chip per **round** (P of the
+  scenario's option and its bin), its current bin, a marker when the bin
+  changed since the round before, and a `⚠ mass` flag when the raw mass on
+  the answer set is under 50% (such a read is never kept or dropped). A
+  click expands the row to the full read for the selected round (click a
+  chip to pick one): every option's renormalised `prob` beside its raw
+  probability, the raw `sequence_mass`, the fields the read wrote first, the
+  timings, and which tail it read. No option is marked as the answer.
+- **Rounds.** A round is one checkpoint the feed was read against: `T2` is
+  your message in turn 2 (read while the model reasons), `T2✓` the end of
+  the assistant's turn 2, `no chat` the spec's own prompt. Every item is
+  read again each turn (*re-read each turn*): **when it ends** (the default)
+  re-reads everything at the turn's end, while the chat is idle, and holds
+  re-reads while a turn generates; **as your message lands** re-reads at the
+  turn's `checkpoint_user`, so the reads pause the model's reasoning;
+  **off** re-reads nothing. A turn that leaves no checkpoint (stopped, failed,
+  cut off) is not re-read. An item's first read always runs at the freshest
+  tail. A row's current bin is its newest read that answered (a newer failed
+  read is flagged); each round keeps its newest read. The *changed* tab
+  lists the items whose bin moved. After turn 1 the scenario's suggested
+  follow-up, which changes what the user asked for, is put in the message
+  box.
+- **The filter** is the user's: *keep at* and *drop below* thresholds on
+  the option's `prob`, the band between them held as *maybe*. The
+  thresholds re-bin every round without re-reading; *re-read all* reads
+  every item against the tail as it is now; *without the chat* reads
+  against the spec's own prompt; *author's notes* shows the intended answer
+  as first asked and after the suggested follow-up. **hand the kept to the
+  chat** puts the kept items into your next message, so the model reasons
+  over only what the screen let through.
+
+Across turns, 2026-09-26 (local daemon on `chat-demo`, candle `d0735dc9`,
+context 8192, the GPU shared with other daemons, so times vary run to run):
+
+| schedule | turn 1 | turn 2 (the follow-up) | turn 3 (hand-off) |
+|---|---|---|---|
+| chat alone (`tail_eval.py`, no reads) | 19.4 s | 15.2 s | |
+| re-read when the turn ends (three runs) | 34.4 / 49.8 / 36.1 s, 14 first reads during it | 15.8 / 22.9 / 16.1 s, 0 reads during it | 11.6 / 11.4 / 12.1 s, 0 reads |
+| re-read as your message lands | 40.8 s, 14 reads | 36.9 s, 14 reads | |
+
+Turn 1 always carries the items' first reads (they arrive while it
+reasons). A round of 14 re-reads at a turn's end took 18-32 s of wall time,
+two in flight, every read but the first starting from a tail prefix. Read
+without the chat, the same feed kept 13 of 14. On the page, travel
+at `T1✓` → `T2✓` moved both stopovers keep → drop (0.84 → 0.15, 0.74 →
+0.22) and the $420 suite drop → keep (0.29 → 0.68); home-lab moved the
+three 256 GB servers keep → maybe and the no-rails 384 GB one drop → keep.
+The round after the hand-off (`T3✓`) reads against a chat that now holds
+the kept list and the model's pick, and it drifts (the Newark stopover rose
+back to 0.62): a later tail is a different prompt.
 
 ### The screening specs
 
@@ -119,6 +154,16 @@ benchmark. The v1 specs and every travel variant are in
   shipping. P(pass) sits on another scale here (fitting quotes 0.85-0.99),
   so its default thresholds are the untuned 0.7 / 0.3: rank within a feed,
   don't carry a threshold across specs.
+- **Across the follow-up** (`tail_eval.py --follow-up`: turn 2 sends the
+  scenario's follow-up, scored against the author's answer after it, and
+  `moves` counts the items whose answer flipped). Travel, 5 flips: after
+  the assistant's turn 2, AUC 1.000, all 8 now-breaking offers dropped and
+  5 of 6 now-fitting kept at the default thresholds, P moved the right way
+  on 4 of 5 flips (the red-eye stayed kept, 0.69 → 0.63); at turn 2's
+  `checkpoint_user` AUC was also 1.000 but every P shifted up and only 2 of
+  5 flips were followed. Home-lab, 4 flips: followed 4 of 4 at both
+  positions, AUC 0.92 after turn 2. The restatement field quoted a mix of
+  both turns ("nonstop only, at most one stop each way"). One chat each.
 - **The chat is what carries it:** without the chat both specs read at
   chance. A tail read after the assistant's turn reads a different prompt
   from one at `checkpoint_user`, so its numbers are its own: the same offer
