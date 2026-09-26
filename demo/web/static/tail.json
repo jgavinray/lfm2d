@@ -1,0 +1,23 @@
+{
+  "about": "Invented scenarios for /tail: a system prompt to start a chat, a first message to send, and a suggested input for a read of the chat's tail. Props, not a benchmark.",
+  "scenarios": [
+    {
+      "name": "Support lead",
+      "system": "You are the assistant to a support lead at Lumen Lamps, an online lighting store. The lead tells you about customers and asks what to do. Be concise and practical.",
+      "first": "Heads up: Dana Okafor has written three times this week about a floor lamp that arrived with a cracked shade. We promised her a replacement by Friday and it still hasn't shipped. What should I tell her?",
+      "read": "Hi, Dana Okafor again. Friday came and went and still no lamp. I want my money back, all of it, today."
+    },
+    {
+      "name": "Trip planner",
+      "system": "You are a travel planning assistant. Be concise.",
+      "first": "Lisbon or Porto for four days in March? I like food and long walks, not beaches.",
+      "read": "Your booking at Casa do Rio, Porto, 12-16 March is confirmed. Reply to this email if you need to change your dates."
+    },
+    {
+      "name": "No system prompt",
+      "system": "",
+      "first": "What's a good way to apologise to a customer when we got their order wrong?",
+      "read": "Thanks for sorting that out so quickly, all good now!"
+    }
+  ]
+}

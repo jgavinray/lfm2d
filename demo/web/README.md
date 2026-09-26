@@ -1,7 +1,7 @@
 # Web demos
 
-Browser pages that play themselves against a running lfm2d, sized 9:16 for
-recording a tab. Python 3.10+, standard library only.
+Browser pages against a running lfm2d. Most play themselves, sized 9:16 for
+recording a tab; `/tail` is one you use. Python 3.10+, standard library only.
 
 ```sh
 python3 demo/web/server.py --upstream 'http://<lfm2d host>:8088' --host 127.0.0.1
@@ -11,7 +11,62 @@ python3 demo/web/server.py --upstream 'http://<lfm2d host>:8088' --host 127.0.0.
 `server.py` binds the host's tailnet IPv4 (`tailscale ip -4`) unless `--host`
 names another address, and refuses a wildcard bind. The daemon sends no CORS
 headers, so pages call `/api/<daemon path>` and the server forwards only the
-routes in its `ALLOWED` set. It never logs request bodies.
+routes in its `ALLOWED` set. It never logs request bodies. A server-sent-event
+answer (`/v1/chat` with `stream: true`) is relayed as it arrives, and a
+browser that hangs up hangs up the daemon, which cancels the turn.
+
+## Tail Reads (`/tail`)
+
+Chat with LFM2.5-8B-A1B on the left; read the chat's tail with a spec on the
+right. Needs a daemon with `/v1/chat` (the `chat-tail` branch,
+`docs/chat-tail-plan.md`) and at least one spec with a choice field:
+
+```sh
+flock ~/.cache/zorak-heavy.lock cargo build --release -p lfm2d --features rocm
+cp target/release/lfm2d /tmp/lfm2d-tail   # a shared target dir can be rebuilt under you
+flock ~/.cache/zorak-heavy.lock /tmp/lfm2d-tail \
+  --adjudicator-model .models/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf \
+  --adjudicator-tokenizer .models/LFM2.5-8B-A1B/tokenizer.json \
+  --opinion-spec demo/specs/email-triage-v2.json \
+  --adjudicator-context 4096 --chat-checkpoint-budget-mib 4096 \
+  --device rocm --bind-addr 127.0.0.1:18187 --threads 8
+python3 demo/web/server.py --upstream 'http://127.0.0.1:18187' --host 127.0.0.1
+# http://127.0.0.1:8765/tail
+```
+
+- **Left, the chat.** Pick a scenario from `tail.json` (a system prompt, a
+  first message and a suggested input to read; all invented) or edit the
+  system prompt; it is fixed once the first message goes. Turns stream from
+  `/v1/chat`; the reasoning shows in its own block and stays in the chat's
+  history, because the daemon continues from the ids it generated, never
+  from text. A turn that is stopped, fails or hits max tokens leaves no
+  checkpoint: it is greyed out and the next message continues after the
+  last finished turn.
+- **Right, the reads.** The spec, its choice fields and its input label
+  come from `GET /v1/opinion/specs`. **read the tail** sends `/v1/opinion`
+  with `context.checkpoint` set to the freshest checkpoint: while a turn is
+  generating, that is the turn's `checkpoint_user` (announced by the
+  stream's `checkpoint` event before the first token); after it, the
+  end of the assistant's turn. Each card shows the description the read
+  wrote, every option's renormalised `prob` beside its raw probability over
+  the full vocabulary and the field's raw `sequence_mass`, the daemon's
+  timings and the checkpoint. No option is marked as the answer: the API
+  returns none. *without the chat* reads the same input on the spec's own
+  prompt, for comparison (a different instrument, invariant 17).
+- **The race.** A read fired into a running turn says at which token it was
+  fired and answered, and how long the turn ran after it; the timeline
+  above the cards draws the turn (prefill, reasoning, answer) and its reads
+  on one clock. Reads go ahead of generation (invariant 15), so the turn
+  pauses while a read runs.
+
+First take, 2026-09-26, local daemon on the `chat-demo` branch (ROCm,
+context 4096), the Support lead scenario, three turns, one read fired about
+15 tokens into each turn's reasoning: each read answered in 1.0-1.3 s
+(prefill of the read turn 0.6-0.7 s, describe 0.27-0.49 s, scoring ~0.1 s)
+while the chat produced 2-3 tokens, and each turn finished 1.2-4.1 s after
+its read answered. The chargeback email read `human_read` 0.98 at turn 3's
+`checkpoint_user`, 0.96 after turn 3, and 0.68 without the chat; one take,
+not a measurement.
 
 ## The Sour Note (`/sour-note`)
 
