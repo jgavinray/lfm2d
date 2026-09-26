@@ -17,57 +17,112 @@ browser that hangs up hangs up the daemon, which cancels the turn.
 
 ## Tail Reads (`/tail`)
 
-Chat with LFM2.5-8B-A1B on the left; read the chat's tail with a spec on the
-right. Needs a daemon with `/v1/chat` (the `chat-tail` branch,
-`docs/chat-tail-plan.md`) and at least one spec with a choice field:
+Tell LFM2.5-8B-A1B what you want on the left, in an ordinary chat; offers
+that other agents send back arrive on the right, and each one gets an
+opinion read against the chat's tail as it lands: a second or two, no chat
+turn. The feed keeps, drops or holds each item on what the read said. Needs
+a daemon with `/v1/chat` (`docs/chat-tail-plan.md`); the page uploads the
+scenarios' specs itself.
 
 ```sh
 # one hold for build and copy: another checkout sharing target/ can rebuild it under you
 flock ~/.cache/zorak-heavy.lock sh -c \
   'cargo build --release -p lfm2d --features rocm && cp target/release/lfm2d /tmp/lfm2d-tail'
-flock ~/.cache/zorak-heavy.lock /tmp/lfm2d-tail \
-  --adjudicator-model .models/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf \
-  --adjudicator-tokenizer .models/LFM2.5-8B-A1B/tokenizer.json \
-  --opinion-spec demo/specs/email-triage-v2.json \
-  --adjudicator-context 4096 --chat-checkpoint-budget-mib 4096 \
-  --device rocm --bind-addr 127.0.0.1:18187 --threads 8
+# hold the lock only while the model loads: -o keeps the backgrounded daemon
+# from inheriting it, and flock exits once /readyz answers
+flock -o ~/.cache/zorak-heavy.lock sh -c '
+  setsid /tmp/lfm2d-tail \
+    --adjudicator-model .models/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf \
+    --adjudicator-tokenizer .models/LFM2.5-8B-A1B/tokenizer.json \
+    --adjudicator-context 8192 --chat-checkpoint-budget-mib 2048 \
+    --device rocm --bind-addr 127.0.0.1:18187 --threads 8 > /tmp/lfm2d-tail.log 2>&1 < /dev/null &
+  until curl -sf http://127.0.0.1:18187/readyz > /dev/null; do sleep 1; done'
 python3 demo/web/server.py --upstream 'http://127.0.0.1:18187' --host 127.0.0.1
 # http://127.0.0.1:8765/tail
 ```
 
-- **Left, the chat.** Pick a scenario from `tail.json` (a system prompt, a
-  first message and a suggested input to read; all invented) or edit the
-  system prompt; it is fixed once the first message goes. Turns stream from
-  `/v1/chat`; the reasoning shows in its own block and stays in the chat's
-  history, because the daemon continues from the ids it generated, never
-  from text. A turn that is stopped, fails or hits max tokens leaves no
-  checkpoint: it is greyed out and the next message continues after the
-  last finished turn.
-- **Right, the reads.** The spec, its choice fields and its input label
-  come from `GET /v1/opinion/specs`. **read the tail** sends `/v1/opinion`
-  with `context.checkpoint` set to the freshest checkpoint: while a turn is
-  generating, that is the turn's `checkpoint_user` (announced by the
-  stream's `checkpoint` event before the first token); after it, the
-  end of the assistant's turn. Each card shows the description the read
-  wrote, every option's renormalised `prob` beside its raw probability over
-  the full vocabulary and the field's raw `sequence_mass`, the daemon's
-  timings and the checkpoint. No option is marked as the answer: the API
-  returns none. *without the chat* reads the same input on the spec's own
-  prompt, for comparison (a different instrument, invariant 17).
-- **The race.** A read fired into a running turn says at which token it was
-  fired and answered, and how long the turn ran after it; the timeline
-  above the cards draws the turn (prefill, reasoning, answer) and its reads
-  on one clock. Reads go ahead of generation (invariant 15), so the turn
-  pauses while a read runs.
+Context 8192: a planning turn here reasons for ~1,800-1,900 tokens, so at
+4096 a second turn has little room left; the page clamps `max_tokens` to
+what the context has left and says so.
 
-First take, 2026-09-26, local daemon on the `chat-demo` branch (ROCm,
-context 4096), the Support lead scenario, three turns, one read fired about
-15 tokens into each turn's reasoning: each read answered in 1.0-1.3 s
-(prefill of the read turn 0.6-0.7 s, describe 0.27-0.49 s, scoring ~0.1 s)
-while the chat produced 2-3 tokens, and each turn finished 1.2-4.1 s after
-its read answered. The chargeback email read `human_read` 0.98 at turn 3's
-`checkpoint_user`, 0.96 after turn 3, and 0.68 without the chat; one take,
-not a measurement.
+- **Scenarios** (`tail.json`, all invented): a system prompt, an opening
+  instruction, the scenario's own spec (uploaded at load, content-addressed),
+  which choice field and option the filter reads, the filter's default
+  thresholds, and the feed: items with an arrival time, and the author's
+  answer (`fits`, `chat_only` for an item that is fine in general and breaks
+  only what the user asked, `note`). The page checks the field and option
+  against the menu at load; field names, options and the input label are
+  read from the menu. *Trip to Lisbon* is the flagship; *Home-lab server*
+  is the second.
+- **Left, the chat.** Unchanged mechanics: turns stream from `/v1/chat`, the
+  reasoning shows in its own block and stays in the chat's history; a turn
+  that is stopped, fails or hits max tokens leaves no checkpoint and is
+  greyed out.
+- **Right, the feed.** It starts when the first turn's `checkpoint` event
+  arrives: the agents answer once there is a request. Each item is read with
+  `/v1/opinion` and `context.checkpoint` set to the freshest tail at that
+  moment (the running turn's `checkpoint_user`, else the end of the last
+  finished turn), two reads at a time. A card shows every option's
+  renormalised `prob` beside its raw probability and the answer set's raw
+  `sequence_mass`, the fields the read wrote first, the timings, and which
+  tail it read. No option is marked as the answer. The filter is the user's:
+  *keep at* and *drop below* thresholds on the scenario's option's `prob`,
+  with the band between them held as *maybe*, and a read whose raw mass is
+  under 50% is never kept or dropped. The thresholds re-bin without
+  re-reading; *re-read all* reads every item against the tail as it is now
+  (say after you change your mind in the chat); *without the chat* reads
+  against the spec's own prompt, which never saw what you asked for;
+  *author's notes* shows the intended answer. **hand the kept to the chat**
+  puts the kept items into your next message, so the model reasons over
+  only what the screen let through.
+
+### The screening specs
+
+`demo/web/tail_eval.py` measures a scenario's spec on its own feed through
+the daemon (a real chat, then every item at `checkpoint_user`, after the
+assistant's turn, and without the chat; aggregates, `-v` for per-item lines;
+`test_tail_eval.py` tests its arithmetic). Measured 2026-09-26 on a local
+ROCm daemon (`chat-demo` branch, candle `dda984e00531`); one chat each; the
+feeds are small invented props, so read these as a first look, not a
+benchmark. The v1 specs and every travel variant are in
+`benchmarks/system1/specs/tail/`; the v2 specs are the page's own files in
+`static/`.
+
+- **Asked whether to keep an offer, the model keeps everything.**
+  `travel-offer-v1` (describe the offer, then `keep`/`drop`) kept 7 of 7
+  fitting offers and 7 of 7 breaking ones, including one that tells the
+  screener to mark it keep (P(keep) 1.000); AUC of P(keep) between them 0.57
+  with the chat, 0.39 without, at 98-100% raw mass. The model was asked
+  and answered keep.
+- **It never looked back at the chat.** A field for "what the traveller
+  asked for" was filled with the offer's own text: the nearest text, not the
+  chat. Passing the request as `facts`, right above the offer, did not help
+  either (P(keep) 0.81-0.99 for a red-eye, a dorm bed and a $420 suite, with or without the chat), and
+  a closed "which rule does it break" field chose `dates` for an offer whose
+  dates matched. A free-text gap field wrote `none`, or an essay.
+- **What moved it**: restating the requirements "quoted from their message
+  earlier in the conversation, not from the offer", a pass/fail question
+  ("passes only when it breaks none of them"), and a sentence that most
+  offers break something (`travel-offer-v2`). Mid-turn, fitting offers read
+  P(pass) 0.46-0.83 and breaking ones 0.03-0.51 (AUC 0.94; the red-eye is
+  the hardest at 0.51); the default thresholds (keep at 0.45, drop below
+  0.30) were fitted on this feed. With only one of the two changes AUC was
+  0.84 (restatement alone: 6 of 7 breaking offers passed; sentence alone: 4
+  of 7); with neither but the pass/fail question, 0.92 with every offer
+  passing. Fourteen items and one chat: differences this size are within
+  what a draw moves. Tuned on the travel feed, so its numbers are not a test.
+- **Confirm, home-lab (`homelab-quote-v2`, same pattern, not tuned):**
+  AUC 0.67 mid-turn, 0.93 after the assistant's turn (the assistant's
+  reasoning restates the requirements), 0.48 without the chat. Mid-turn it
+  caught missing rails, 91% seller feedback and the gift-card scam and let
+  through 128 GB of RAM, US-only shipping, 3.5-inch bays and $960 with
+  shipping. P(pass) sits on another scale here (fitting quotes 0.85-0.99),
+  so its default thresholds are the untuned 0.7 / 0.3: rank within a feed,
+  don't carry a threshold across specs.
+- **The chat is what carries it:** without the chat both specs read at
+  chance. A tail read after the assistant's turn reads a different prompt
+  from one at `checkpoint_user`, so its numbers are its own: the same offer
+  moved from 0.52 to 0.19 between them.
 
 ## The Sour Note (`/sour-note`)
 

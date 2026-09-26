@@ -264,13 +264,48 @@ class PageTests(unittest.TestCase):
         scenarios = json.loads((static / "tail.json").read_text())["scenarios"]
         self.assertEqual(len({s["name"] for s in scenarios}), len(scenarios))
         for s in scenarios:
-            self.assertIsInstance(s["system"], str)
-            self.assertTrue(s["first"].strip())
-            self.assertTrue(s["read"].strip())
-            # the chat renderer refuses control tokens in any turn
-            for text in (s["system"], s["first"], s["read"]):
-                self.assertNotIn("<|", text)
-                self.assertNotIn("<think>", text)
+            with self.subTest(scenario=s["name"]):
+                # the chat renderer refuses control tokens in any turn
+                for text in (s["system"], s["first"], s["handoff"], *(i["text"] for i in s["items"])):
+                    self.assertTrue(text.strip())
+                    self.assertNotIn("<|", text)
+                    self.assertNotIn("<think>", text)
+                spec = json.loads((static / s["spec"].lstrip("/")).read_text())
+                self.assertIsInstance(spec.get("input_label"), str)
+                self.assertNotIn("tools", spec, "a spec with tools cannot read a tail")
+                props, order = spec["output_schema"]["properties"], spec["output_schema"]["required"]
+                judge = s["judge"]
+                self.assertLessEqual(s["filter"]["drop_below"], s["filter"]["keep_at"])
+                self.assertTrue(0 < s["filter"]["drop_below"] and s["filter"]["keep_at"] < 1)
+                self.assertIn(judge["keep"], props[judge["field"]]["enum"])
+                # describe first: a text field is written before the judged slot
+                before = order[:order.index(judge["field"])]
+                self.assertTrue(any("enum" not in props[f] for f in before), before)
+                items = s["items"]
+                self.assertEqual(len({i["text"] for i in items}), len(items))
+                self.assertEqual([i["at"] for i in items], sorted(i["at"] for i in items))
+                for i in items:
+                    self.assertIsInstance(i["fits"], bool)
+                    self.assertIsInstance(i["chat_only"], bool)
+                    self.assertTrue(i["from"].strip() and i["note"].strip())
+                    self.assertFalse(i["fits"] and i["chat_only"], "chat_only marks an item the chat rules out")
+                # a feed the filter should split, not one it keeps or drops wholesale
+                kept = sum(i["fits"] for i in items)
+                self.assertTrue(0.3 <= kept / len(items) <= 0.7, kept)
+                self.assertGreaterEqual(sum(i["chat_only"] for i in items), 3)
+
+    def test_tail_page_reads_its_vocabulary_from_the_scenario_and_the_menu(self):
+        page = (Path(server.__file__).parent / "static" / "tail.html").read_text()
+        script = page[page.index("<script>"):]
+        scenarios = json.loads((Path(server.__file__).parent / "static" / "tail.json").read_text())["scenarios"]
+        for s in scenarios:
+            spec = json.loads((Path(server.__file__).parent / "static" / s["spec"].lstrip("/")).read_text())
+            names = set(spec["output_schema"]["properties"]) | {spec["input_label"]}
+            for f in spec["output_schema"]["properties"].values():
+                names |= set(f.get("enum", []))
+            for name in names:
+                with self.subTest(name=name):
+                    self.assertNotIn(f'"{name}"', script)
 
     def test_one_pass_props_are_well_formed(self):
         static = Path(server.__file__).parent / "static"
