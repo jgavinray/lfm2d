@@ -1251,9 +1251,17 @@ impl StateCache {
             Cached::TailPrefix(TailPrefix { len, state: state.clone() }),
         )
     }
-    /// Drop every entry of a spec that is gone (deleted, evicted).
+    /// Drop every entry of a spec that is gone (deleted, evicted). The key's
+    /// second `:` field is the spec's id in every kind, which holds only
+    /// because ids are sha256 hex: keying by a spec's NAME (a file stem,
+    /// which may hold a `:`) would break this.
     fn forget_spec(&mut self, spec: &str) -> usize {
         self.store.retain(|id| id.split(':').nth(1) != Some(spec))
+    }
+    /// Drop the tail prefixes of a chat checkpoint that is gone.
+    fn forget_checkpoint(&mut self, checkpoint: &str) -> usize {
+        self.store
+            .retain(|id| !(id.starts_with("tail:") && id.rsplit(':').next() == Some(checkpoint)))
     }
     #[cfg(test)]
     fn len(&self) -> usize {
@@ -2326,6 +2334,7 @@ impl Generator for Adjudicator {
             .map_err(Failure::Unprocessable)?;
         if let Some(gone) = &evicted {
             self.states.forget_spec(gone);
+            self.background.retain(|(_, spec)| spec != gone);
         }
         // No `check()` here. `register_or_load` above already committed the
         // mutation (inserted the spec, possibly evicted an LRU one) —
@@ -2350,6 +2359,7 @@ impl Generator for Adjudicator {
         match self.specs.remove(id) {
             RemoveOutcome::Removed(spec) => {
                 self.states.forget_spec(&spec.id);
+                self.background.retain(|(_, queued)| *queued != spec.id);
                 let entry = spec.menu.clone();
                 UnregisterOutcome::Deleted { entry, menu: self.menu() }
             }
@@ -2485,13 +2495,20 @@ impl Adjudicator {
         let bytes = self.state_size.bytes(checkpoint.ids.len())
             + checkpoint.ids.len() * std::mem::size_of::<u32>()
             + checkpoint.text.len();
-        for spec in checkpoint.read_specs.lock().expect("read_specs lock").iter() {
-            let task = (id.clone(), spec.clone());
+        let specs = checkpoint.read_specs.lock().expect("read_specs lock").clone();
+        let evicted = self.chats.insert(id.clone(), bytes, checkpoint).map_err(Failure::Internal)?;
+        // What an evicted checkpoint leaves: its tail prefixes (unreachable
+        // now: a read of it is a 404 first) and its queued prefills.
+        for gone in &evicted {
+            self.states.forget_checkpoint(gone);
+        }
+        self.background.retain(|(checkpoint, _)| !evicted.contains(checkpoint));
+        for spec in specs {
+            let task = (id.clone(), spec);
             if !self.background.contains(&task) {
                 self.background.push_back(task);
             }
         }
-        let evicted = self.chats.insert(id, bytes, checkpoint).map_err(Failure::Internal)?;
         if !evicted.is_empty() {
             tracing::info!(
                 evicted = evicted.len(),
@@ -2946,9 +2963,6 @@ impl Adjudicator {
                     // this request's alone.
                     (Some(held), Some((at, split))) if request.use_cache => {
                         let checkpoint = checkpoint_id_of(request);
-                        // This chat is read with this spec: its later
-                        // checkpoints get the head prefilled in the background.
-                        held.read_specs.lock().expect("read_specs lock").insert(spec.id.clone());
                         let (mut state, cached_tokens) = match self.states.tail(&spec.id, checkpoint) {
                             Some((state, len)) => {
                                 if len != split {
@@ -2977,6 +2991,11 @@ impl Adjudicator {
                             forward_segments(&self.model, &mut state, &[&prompt_ids[split..]], &mut || check())?;
                         logits.device().synchronize()?;
                         check()?;
+                        // This chat is read with this spec: its later
+                        // checkpoints get the head prefilled in the
+                        // background. Marked once the read's prefill is
+                        // done, not on a read that failed.
+                        held.read_specs.lock().expect("read_specs lock").insert(spec.id.clone());
                         PreparedEvaluation { state, logits, cached_tokens }
                     }
                     // Cold, as asked: the same bytes from token 0 in plain
@@ -5117,6 +5136,16 @@ mod prompt_cache_tests {
         assert_eq!(states.len(), DESCRIBED_CACHE_CAPACITY + 1);
         assert_eq!(states.forget_spec("s"), DESCRIBED_CACHE_CAPACITY);
         assert_eq!(states.len(), 1);
+        // Tail prefixes go with their spec, or with their checkpoint.
+        let mut state = model.new_state();
+        model.forward(&[1, 2], &mut state).unwrap();
+        states.put_tail("t", "cp1", &state, 2).unwrap();
+        states.put_tail("t", "cp2", &state, 2).unwrap();
+        states.put_tail("u", "cp1", &state, 2).unwrap();
+        assert_eq!(states.forget_checkpoint("cp1"), 2);
+        assert!(states.tail("t", "cp2").is_some() && states.tail("t", "cp1").is_none());
+        assert_eq!(states.forget_spec("t"), 2, "t's described state and its cp2 prefix");
+        assert_eq!(states.len(), 0);
     }
 
     /// Every cached state counts against one byte budget, whichever spec
@@ -5331,15 +5360,19 @@ mod prompt_cache_tests {
 mod priority_tests {
     use super::*;
 
-    /// `ALL` is the class order the pick and the pause walk, and `Ord` is
-    /// what `next_above` compares: a class added out of place in either
-    /// would serve the wrong jobs at a pause.
+    /// `ALL` is every queued class, once, lowest first: the order the pick
+    /// walks. The match is exhaustive, so a new class fails to compile here
+    /// until it is placed; `Background` alone has no queue.
     #[test]
-    fn all_lists_every_class_once_lowest_first() {
-        let mut sorted = Priority::ALL.to_vec();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted, Priority::ALL);
+    fn all_lists_every_queued_class_once_lowest_first() {
+        let queued = |p: Priority| match p {
+            Priority::Background => false,
+            Priority::Generative | Priority::Interactive => true,
+        };
+        let every = [Priority::Background, Priority::Generative, Priority::Interactive];
+        let mut expected: Vec<_> = every.into_iter().filter(|p| queued(*p)).collect();
+        expected.sort();
+        assert_eq!(expected, Priority::ALL);
         for (i, class) in Priority::ALL.iter().enumerate() {
             assert_eq!(class.index(), i);
         }
