@@ -22,8 +22,9 @@ right. Needs a daemon with `/v1/chat` (the `chat-tail` branch,
 `docs/chat-tail-plan.md`) and at least one spec with a choice field:
 
 ```sh
-flock ~/.cache/zorak-heavy.lock cargo build --release -p lfm2d --features rocm
-cp target/release/lfm2d /tmp/lfm2d-tail   # a shared target dir can be rebuilt under you
+# one hold for build and copy: another checkout sharing target/ can rebuild it under you
+flock ~/.cache/zorak-heavy.lock sh -c \
+  'cargo build --release -p lfm2d --features rocm && cp target/release/lfm2d /tmp/lfm2d-tail'
 flock ~/.cache/zorak-heavy.lock /tmp/lfm2d-tail \
   --adjudicator-model .models/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf \
   --adjudicator-tokenizer .models/LFM2.5-8B-A1B/tokenizer.json \
