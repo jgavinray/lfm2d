@@ -111,7 +111,7 @@ CLI flags, each with an env-var fallback (`clap`'s `env` feature):
 | `--threads` | `LFM2D_THREADS` | Size of rayon's global thread pool (candle's matmul runs on it transitively), set BEFORE any model load. Defaults to `std::thread::available_parallelism()` |
 | `--adjudicator-model` | `LFM2D_ADJUDICATOR_MODEL` | LFM2.5-8B-A1B GGUF; with `--adjudicator-tokenizer`, enables the opinion engine (`/v1/opinion`, `/v1/adjudicate`, `/v1/chat`, `/v1/opinion/specs`, `/v1/adjudicator`, `/v1/probe`). Each alone is refused |
 | `--adjudicator-tokenizer` | `LFM2D_ADJUDICATOR_TOKENIZER` | The matching Hugging Face `tokenizer.json`, checked against the GGUF's vocabulary at load |
-| `--adjudicator-context` | (none) | Context budget including output, default `4096`, range `128`–`8192` |
+| `--adjudicator-context` | (none) | Context budget including output, default `4096`, range `128`–`32768` (`docs/lfm25-adjudicator.md`, "Context budget") |
 | `--adjudicator-repeat-penalty` | (none) | Sign-aware repetition penalty, default `1.05` (the checkpoint author's), range `1.0`–`2.0`; part of every spec's `snapshot_id` |
 | `--opinion-spec` (repeatable) | `LFM2D_OPINION_SPECS` (comma-separated) | A boot-time spec, named by its file stem. Optional: with none the menu starts empty and fills by upload. Needs the adjudicator. No spec is a default |
 | `--opinion-spec-capacity` | `LFM2D_OPINION_SPEC_CAPACITY` | How many uploaded specs stay resident (LRU), default `8`; boot specs don't count and are never evicted |

@@ -70,7 +70,9 @@ spec:
             # adjudicator. Light (~16 ms single on the GPU) and cheap to
             # keep resident.
             - --embedder-dir=/models/LFM2.5-Embedding-350M
-            - --adjudicator-context=4096
+            # Chat keeps preserved reasoning in its history; 4096 fills
+            # within a few turns.
+            - --adjudicator-context=32768
             - --device=rocm
             # 8 was the flat region for the encoder heads on a 32-core
             # host; the adjudicator's work is on the GPU. Sweep before

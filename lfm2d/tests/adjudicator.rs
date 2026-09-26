@@ -658,9 +658,21 @@ fn adjudicator_configuration_requires_complete_compatible_inputs() {
     ];
     assert!(Cli::try_parse_from(base).unwrap().validate().is_ok());
     assert!(Cli::try_parse_from(&base[..5]).unwrap().validate().is_err());
+    // The whole range is accepted, both ends included: 32768 is what chat's
+    // preserved reasoning needs, and it is the default.
+    for ok in ["128", "8193", "32768"] {
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain(["--adjudicator-context", ok]))
+                .unwrap()
+                .validate()
+                .is_ok(),
+            "--adjudicator-context {ok}"
+        );
+    }
     for extra in [
         ["--dtype", "bf16"],
-        ["--adjudicator-context", "8193"],
+        ["--adjudicator-context", "127"],
+        ["--adjudicator-context", "32769"],
         ["--adjudicator-repeat-penalty", "NaN"],
         ["--adjudicator-repeat-penalty", "0.9"],
     ] {
