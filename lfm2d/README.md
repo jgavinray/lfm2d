@@ -36,8 +36,10 @@ target/release/lfm2d --device auto --threads 8 \
 ```
 
 Optional `cuda` and `metal` features expose those Candle backends too. ROCm
-on the Radeon 8060S is hardware-tested here; CUDA/Metal are not verified by
-that result. Candle core/nn are pinned together to the published
+on the Radeon 8060S is hardware-tested here, and since 2026-09-27 CUDA on
+the DGX Spark (GB10, sm_121, CUDA 13.0, aarch64): the encoder heads' CPU/GPU
+parity, `demo/e2e.py` and the real 8B suite pass there, with the MoE on the
+generic `indexed_moe_forward` path. Metal is not verified. Candle core/nn are pinned together to the published
 `tobert/candle` revision in the root manifest because crates.io 0.11 lacks
 ROCm. A clean checkout can fetch this revision without the ignored vendor tree.
 
@@ -443,7 +445,8 @@ earlier; see `src/telemetry.rs`'s module docs). The same resource is attached
 to traces, metrics, and logs. Device metadata comes from the loaded engine,
 not host hardware inventory; `lfm2d.execution.device_name` carries the
 selected device's identity where the backend can name its target (ROCm:
-`rocm:gfx1151:hip7.2`) and is omitted elsewhere, and `lfm2d.candle_rev` names
+`rocm:gfx1151:hip7.2`; CUDA: `cuda:sm_121:nvcc13.0:drv580.173.02`) and is
+omitted elsewhere, and `lfm2d.candle_rev` names
 the candle build. Metrics:
 `lfm2d.worker.queue_depth` (observable gauge over an `AtomicUsize`,
 incremented on send, decremented when the worker picks a command up),
@@ -522,13 +525,15 @@ decided and why (also in the relevant doc comments):
 
 ## Problems noted, not fixed
 
-- **`snapshot_id` names the GPU target only on ROCm.** Since 2026-09-24
-  it hashes the device identity (`rocm:gfx1151:hip7.2`, from the fork's
-  `RocmDevice::arch()`/`hip_version()`) and the candle revision
-  (`CANDLE_REV`, read from `Cargo.lock` by `lfm2d/build.rs`). CUDA and
-  Metal still report the bare backend name: two NVIDIA cards would share a
-  `snapshot_id`. The CUDA port should add the compute capability the same
-  way.
+- **`snapshot_id` names the GPU target only on ROCm and CUDA.** It hashes
+  the device identity and the candle revision (`CANDLE_REV`, read from
+  `Cargo.lock` by `lfm2d/build.rs`). ROCm's (`rocm:gfx1151:hip7.2`, since
+  2026-09-24) comes from the fork's `RocmDevice::arch()`/`hip_version()`.
+  CUDA's (`cuda:sm_121:nvcc13.0:drv580.173.02`, since 2026-09-27) is the
+  compute capability, the nvcc release in the header of candle's own PTX,
+  and the driver release from `/proc/driver/nvidia/version`: the driver
+  JIT-compiles that PTX, so a driver update can move the numbers. Metal
+  still reports the bare backend name.
 - **Spec registration telemetry has no source address.** The daemon has
   no `ConnectInfo` wiring, so a registration or eviction log line cannot
   say who uploaded the spec.
