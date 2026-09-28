@@ -53,7 +53,8 @@ shapes before implementing a head — never guess.
 ROCm (gfx1151, zorak) is the GPU backend we run and measure. CUDA first
 ran on the DGX Spark (tenchi: GB10, sm_121, CUDA 13.0, arm64) on
 2026-09-27: it builds, and the encoder parity, e2e and real 8B suites pass,
-the MoE on the generic path. **Metal is a future port**; Intel is
+the MoE's grouped prefill on the shared kernels since the same day
+(fork `lfm25-cuda-grouped`). **Metal is a future port**; Intel is
 hypothetical until System 1 is dialled in and demoed (Amy, 2026-09-24: maybe "a direct
 backend on whatever Intel's ideal sdk is"). What keeps a port cheap:
 

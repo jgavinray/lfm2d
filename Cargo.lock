@@ -282,7 +282,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "candle-core"
 version = "0.11.0"
-source = "git+https://github.com/tobert/candle?rev=d0735dc91b6e844dd01698fb7935c3171e5bd6bc#d0735dc91b6e844dd01698fb7935c3171e5bd6bc"
+source = "git+https://github.com/tobert/candle?rev=cca9bde744a8b531b9c27392ba695db31c21d66e#cca9bde744a8b531b9c27392ba695db31c21d66e"
 dependencies = [
  "byteorder",
  "candle-kernels",
@@ -315,7 +315,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.11.0"
-source = "git+https://github.com/tobert/candle?rev=d0735dc91b6e844dd01698fb7935c3171e5bd6bc#d0735dc91b6e844dd01698fb7935c3171e5bd6bc"
+source = "git+https://github.com/tobert/candle?rev=cca9bde744a8b531b9c27392ba695db31c21d66e#cca9bde744a8b531b9c27392ba695db31c21d66e"
 dependencies = [
  "cudaforge",
 ]
@@ -323,7 +323,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.11.0"
-source = "git+https://github.com/tobert/candle?rev=d0735dc91b6e844dd01698fb7935c3171e5bd6bc#d0735dc91b6e844dd01698fb7935c3171e5bd6bc"
+source = "git+https://github.com/tobert/candle?rev=cca9bde744a8b531b9c27392ba695db31c21d66e#cca9bde744a8b531b9c27392ba695db31c21d66e"
 dependencies = [
  "block2",
  "half",
@@ -338,7 +338,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
-source = "git+https://github.com/tobert/candle?rev=d0735dc91b6e844dd01698fb7935c3171e5bd6bc#d0735dc91b6e844dd01698fb7935c3171e5bd6bc"
+source = "git+https://github.com/tobert/candle?rev=cca9bde744a8b531b9c27392ba695db31c21d66e#cca9bde744a8b531b9c27392ba695db31c21d66e"
 dependencies = [
  "candle-core",
  "candle-metal-kernels",
@@ -356,7 +356,7 @@ dependencies = [
 [[package]]
 name = "candle-rocm-kernels"
 version = "0.11.0"
-source = "git+https://github.com/tobert/candle?rev=d0735dc91b6e844dd01698fb7935c3171e5bd6bc#d0735dc91b6e844dd01698fb7935c3171e5bd6bc"
+source = "git+https://github.com/tobert/candle?rev=cca9bde744a8b531b9c27392ba695db31c21d66e#cca9bde744a8b531b9c27392ba695db31c21d66e"
 dependencies = [
  "dirs",
  "fslock",
@@ -369,7 +369,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.11.0"
-source = "git+https://github.com/tobert/candle?rev=d0735dc91b6e844dd01698fb7935c3171e5bd6bc#d0735dc91b6e844dd01698fb7935c3171e5bd6bc"
+source = "git+https://github.com/tobert/candle?rev=cca9bde744a8b531b9c27392ba695db31c21d66e#cca9bde744a8b531b9c27392ba695db31c21d66e"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "candle-ug"
 version = "0.11.0"
-source = "git+https://github.com/tobert/candle?rev=d0735dc91b6e844dd01698fb7935c3171e5bd6bc#d0735dc91b6e844dd01698fb7935c3171e5bd6bc"
+source = "git+https://github.com/tobert/candle?rev=cca9bde744a8b531b9c27392ba695db31c21d66e#cca9bde744a8b531b9c27392ba695db31c21d66e"
 dependencies = [
  "ug",
  "ug-cuda",
@@ -810,7 +810,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2350,7 +2350,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2663,7 +2663,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3218,7 +3218,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

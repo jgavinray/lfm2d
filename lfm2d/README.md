@@ -38,8 +38,9 @@ target/release/lfm2d --device auto --threads 8 \
 Optional `cuda` and `metal` features expose those Candle backends too. ROCm
 on the Radeon 8060S is hardware-tested here, and since 2026-09-27 CUDA on
 the DGX Spark (GB10, sm_121, CUDA 13.0, aarch64): the encoder heads' CPU/GPU
-parity, `demo/e2e.py` and the real 8B suite pass there, with the MoE on the
-generic `indexed_moe_forward` path. Metal is not verified. Candle core/nn are pinned together to the published
+parity, `demo/e2e.py` and the real 8B suite pass there, prefill on the same
+grouped MoE kernels as ROCm (see `docs/lfm25-grouped-prefill.md`). Metal is
+not verified. Candle core/nn are pinned together to the published
 `tobert/candle` revision in the root manifest because crates.io 0.11 lacks
 ROCm. A clean checkout can fetch this revision without the ignored vendor tree.
 

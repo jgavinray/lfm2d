@@ -77,6 +77,24 @@ Hardware correctness checks passed:
 - Cached repeats match exactly. Deadline cancellation, reuse afterward,
   and in-flight SIGTERM complete successfully.
 
+## CUDA (2026-09-28)
+
+The kernels live in the shared `quantized.cu`, so CUDA had them in its PTX
+all along; only the host side was ROCm-only. Fork commit `cca9bde7`
+(`lfm25-cuda-grouped`) ports `rocm/moe.rs`'s grouped path to
+`quantized/cuda/moe.rs` with the same dispatch rule (Q5K/Q6K, at least eight
+routed pairs per expert), the same q8_1 activations and Q5 minimum, and the
+AMPERE tile set nvcc compiles. The LFM2 model packs once per layer and
+shares it across gate/up and down on both backends.
+
+On the DGX Spark (GB10, sm_121) the fork's tests check grouped against the
+CPU and against single-route matvecs within 2e-5 of the row scale (partial
+tiles, padded K, duplicate routes, a hot expert, nonzero offsets), invalid
+IDs, and prepared-routing validation; the lfm2d real 8B suite passes on it.
+The port also fixed the CUDA matvec reading input and IDs from the start of
+their storage regardless of layout offset. Speed was not measured: vLLM was
+sharing the GPU.
+
 ## Prompt/model observations
 
 Amy clarified the acceptance boundary: “we don't really know if our prompt
