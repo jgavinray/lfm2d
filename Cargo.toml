@@ -13,8 +13,8 @@ categories = ["science"]
 [dependencies]
 # Published fork includes the ROCm backend exercised on the local AMD GPU.
 # Pin both crates to one revision so their Device/Tensor types stay identical.
-candle-core = { git = "https://github.com/tobert/candle", rev = "cca9bde744a8b531b9c27392ba695db31c21d66e" }
-candle-nn = { git = "https://github.com/tobert/candle", rev = "cca9bde744a8b531b9c27392ba695db31c21d66e" }
+candle-core = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd" }
+candle-nn = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
