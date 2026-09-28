@@ -2616,6 +2616,23 @@ impl Adjudicator {
             }
         };
         drop(base);
+        // The tail prefixes of the specs this chat has been read with, on
+        // this checkpoint, before announcing it. Left to the background they
+        // would wait for the worker to idle, which it does not while this
+        // turn generates, so the first read of each spec the announcement
+        // brings would forward the spec head itself; filled after the
+        // announcement, a read arriving at a fill's pause would do the same
+        // and the fill would be wasted. The turn's `prefill_ms` includes it.
+        // A failed fill costs only the head a read then forwards itself, so
+        // it is logged and the turn goes on, unless the turn itself is done.
+        let specs = user.read_specs.lock().expect("read_specs lock").clone();
+        for spec in &specs {
+            if let Err(failure) = self.tail_prefill(&user_id, spec, at) {
+                at.check()?;
+                tracing::warn!(error = ?failure, spec = %spec, "tail prefill for a turn's own checkpoint failed");
+            }
+        }
+        self.background.retain(|(checkpoint, _)| *checkpoint != user_id);
         events(ChatEvent::Checkpoint {
             checkpoint_user: user_id.clone(),
             prompt_tokens,

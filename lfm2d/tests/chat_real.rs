@@ -289,6 +289,21 @@ fn chat_checkpoints_and_tail_reads_on_the_real_model() {
         assert_eq!(r.cache.prefix, "tail", "the read started after the background prefix");
         read(&mut a1, &request).unwrap()
     };
+
+    // 5c. A turn's own user checkpoint gets the tail prefixes of the specs
+    //     its chat was read with before the turn announces it, not when the
+    //     worker next idles: the reads the announcement brings start after
+    //     them, with no background work run.
+    let r5 = chat(&mut a1, &cont(&asst4, B2, 1));
+    assert_eq!(r5.cached_tokens, a1.chat_checkpoint_ids(&asst4).unwrap().len(), "a new user checkpoint");
+    assert_eq!(a1.background_pending(), 0, "filled in the turn, nothing left for the idle worker");
+    {
+        let request = read_request(Some(&r5.checkpoint_user), EMAILS[0], true);
+        let menu = a1.menu();
+        let questions = menu.iter().find(|e| e.spec == SPEC).unwrap().resolve_all(&request.questions).unwrap();
+        let r = a1.opine(&request, &questions, &|| Ok(())).unwrap();
+        assert_eq!(r.cache.prefix, "tail", "the turn filled its user checkpoint's prefix");
+    }
     drop(a1);
 
     // 6. The canonical schedule: a fresh daemon STARTS a chat with A and B2

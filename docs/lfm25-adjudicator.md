@@ -763,8 +763,14 @@ per class): a described-cache miss from a prefix took p50 **653 ms** wall
 and 127 ms of prefill, where forwarding the 304-token head itself took
 1274 ms and 710 ms, though the prefix reads' prompts were longer (p50 1215
 vs 560 tokens). Filling one prefix took 530–590 ms of idle worker time.
-Reads during a turn's generation never find a background prefix for that
-turn's user checkpoint: background work runs only between jobs.
+A turn's own user checkpoint does not wait for the background, which
+cannot run while the turn generates: since 2026-09-28 the turn fills that
+checkpoint's tail prefixes (the specs its chat was read with) before it
+announces the checkpoint, so the reads the announcement brings start after
+them. The chat's first token waits for it, one spec head each (~0.5 s on
+gfx1151), and the turn's `prefill_ms` includes it. A turn from a chat not
+yet read with any spec, such as a first turn, fills nothing
+(`chat_real.rs`, step 5c).
 
 ### Tail reads: `/v1/opinion` with `context`
 

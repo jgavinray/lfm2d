@@ -85,8 +85,9 @@ pub(crate) struct ChatCheckpoint {
     pub(crate) state: candle_transformers::models::quantized_lfm2_moe::State,
     /// The ids of the specs this chat has been tail-read with, on this
     /// checkpoint or one before it in the chain: the checkpoints a turn
-    /// leaves inherit them, and get those specs' tail prefixes filled in
-    /// the background.
+    /// leaves inherit them, and get those specs' tail prefixes filled: a
+    /// turn's user checkpoint by the turn before it announces it, its
+    /// assistant checkpoint in the background.
     pub(crate) read_specs: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
