@@ -50,9 +50,11 @@ shapes before implementing a head — never guess.
 
 ## GPU backends
 
-ROCm (gfx1151, zorak) is the only GPU backend we run and measure.
-**NVIDIA (CUDA) and Metal are future ports**; Intel is hypothetical until
-System 1 is dialled in and demoed (Amy, 2026-09-24: maybe "a direct
+ROCm (gfx1151, zorak) is the GPU backend we run and measure. CUDA first
+ran on the DGX Spark (tenchi: GB10, sm_121, CUDA 13.0, arm64) on
+2026-09-27: it builds, and the encoder parity, e2e and real 8B suites pass,
+the MoE on the generic path. **Metal is a future port**; Intel is
+hypothetical until System 1 is dialled in and demoed (Amy, 2026-09-24: maybe "a direct
 backend on whatever Intel's ideal sdk is"). What keeps a port cheap:
 
 - lfm2d itself is backend-neutral: the only backend-gated code is
@@ -65,15 +67,18 @@ backend on whatever Intel's ideal sdk is"). What keeps a port cheap:
   behind `supports_grouped`, with `indexed_moe_forward` everywhere else).
 - An unsupported backend fails loudly ("not implemented for …"); the CPU
   MoE is a reference, never a GPU fallback.
-- The fork's CUDA side has never been compiled by nvcc (zorak has none).
-  The first CUDA step is `cargo build --features cuda` plus the real-model
-  tests (`LFM2D_TEST_GPU=cuda`, `demo/test_devices.sh cuda`) on the DGX
-  Spark (tenchi, arm64).
+- The fork's CUDA side is compiled by nvcc on tenchi only (zorak has
+  none). Run it there with `LFM2D_TEST_GPU=cuda` and
+  `demo/test_devices.sh cuda`; the kernels are built for the build host's
+  compute capability.
 - Numbers are per backend and per target: re-measure on the new stack,
   never carry a threshold across. `snapshot_id` hashes the device identity
-  (`rocm:gfx1151:hip7.2`) and the candle revision; a CUDA port should
-  give its device the compute capability the same way (today it reports
-  the bare `cuda`).
+  (`rocm:gfx1151:hip7.2`, `cuda:sm_121:nvcc13.0:drv580.173.02`: the
+  driver JIT-compiles candle's PTX, so it counts) and the candle revision.
+- Real-test memory figures read the driver's per-process account: KFD and
+  DRM fdinfo on ROCm, the allocation pool on CUDA
+  (`support::cuda_pool_bytes`: `used` sizes a state; `reserved`, what the
+  process holds, grows in megabyte chunks).
 
 ## Checkpoint facts (fixture-verified — trust these over docs)
 

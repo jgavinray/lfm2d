@@ -109,3 +109,45 @@ pub fn try_load_adjudicator(cli: &Cli) -> Result<Adjudicator, String> {
 pub fn load_adjudicator(cli: &Cli) -> Adjudicator {
     try_load_adjudicator(cli).unwrap_or_else(|e| panic!("load the adjudicator: {e}"))
 }
+
+/// This process's device memory by the CUDA driver's own account: the
+/// device's current allocation pool, from which cudarc allocates every
+/// candle tensor (`cuMemAllocAsync`). What the libraries allocate for
+/// themselves (cuBLAS workspaces, loaded modules) is not in it.
+#[cfg(feature = "cuda")]
+#[derive(Clone, Copy, Debug)]
+pub struct CudaPoolBytes {
+    /// Live allocations, byte-exact (`CU_MEMPOOL_ATTR_USED_MEM_CURRENT`):
+    /// what a held tensor costs.
+    pub used: u64,
+    /// What the pool holds from the device (`..._RESERVED_MEM_CURRENT`):
+    /// live allocations plus freed blocks kept for reuse, the counterpart
+    /// of ROCm's KFD and DRM fdinfo accounts. It grows in chunks of
+    /// megabytes, so it cannot size anything smaller.
+    pub reserved: u64,
+}
+
+#[cfg(feature = "cuda")]
+pub fn cuda_pool_bytes(device: &candle_core::Device) -> CudaPoolBytes {
+    use candle_core::cuda_backend::cudarc::driver::{result, sys};
+    let candle_core::Device::Cuda(cuda) = device else { panic!("not a CUDA device: {device:?}") };
+    let context = cuda.cuda_stream().context().clone();
+    context.bind_to_thread().expect("bind the CUDA context to this thread");
+    // Without pools cudarc falls back to plain cuMemAlloc and this account
+    // would read 0: refuse rather than report nothing as a measurement.
+    let pools = context
+        .attribute(sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED)
+        .expect("query memory pool support");
+    assert_eq!(pools, 1, "this CUDA device has no memory pools; the pool account cannot see its allocations");
+    let pool = unsafe { result::device::get_mem_pool(context.cu_device()) }.expect("the device's current memory pool");
+    let read = |attribute| {
+        let mut bytes = 0u64;
+        unsafe { result::mem_pool::get_attribute(pool, attribute, (&mut bytes as *mut u64).cast()) }
+            .expect("read a memory pool attribute");
+        bytes
+    };
+    CudaPoolBytes {
+        used: read(sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_USED_MEM_CURRENT),
+        reserved: read(sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT),
+    }
+}

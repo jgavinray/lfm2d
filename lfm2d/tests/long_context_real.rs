@@ -235,9 +235,27 @@ fn an_opinion_read_takes_a_facts_block_past_the_old_8192_cap() {
 
 // ---- measurement ----------------------------------------------------------
 
+/// This process's GPU memory in bytes, by the backend's own account, part by
+/// part: DRM fdinfo's gtt and vram on ROCm, what the allocation pool holds
+/// on CUDA (`support::cuda_pool_bytes`, reserved: parked blocks included,
+/// as on ROCm).
+fn gpu_parts(device: &candle_core::Device) -> Vec<(&'static str, u64)> {
+    #[cfg(feature = "cuda")]
+    if device.is_cuda() {
+        return vec![("pool", support::cuda_pool_bytes(device).reserved)];
+    }
+    let _ = device;
+    let (gtt, vram) = drm_fdinfo_bytes();
+    vec![("gtt", gtt), ("vram", vram)]
+}
+
+fn gpu_bytes(device: &candle_core::Device) -> u64 {
+    gpu_parts(device).iter().map(|(_, b)| b).sum()
+}
+
 /// This process's GPU memory from DRM fdinfo, in bytes: (gtt, vram). One
 /// client can sit behind several fds, so clients are counted once.
-fn gpu_bytes() -> (u64, u64) {
+fn drm_fdinfo_bytes() -> (u64, u64) {
     let mut seen = std::collections::BTreeSet::new();
     let (mut gtt, mut vram) = (0, 0);
     let Ok(dir) = std::fs::read_dir("/proc/self/fdinfo") else { return (0, 0) };
@@ -277,18 +295,18 @@ struct Sampler {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Sampler {
-    fn start() -> Self {
+    fn start(device: &candle_core::Device) -> Self {
         let peak = std::sync::Arc::new(std::sync::Mutex::new((0u64, 0u64)));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (p, s) = (peak.clone(), stop.clone());
+        let (p, s, device) = (peak.clone(), stop.clone(), device.clone());
         let thread = std::thread::spawn(move || {
             while !s.load(std::sync::atomic::Ordering::Relaxed) {
                 let rss = status_kib("/proc/self/status", "VmRSS:") * 1024;
-                let (gtt, vram) = gpu_bytes();
+                let gpu = gpu_bytes(&device);
                 {
                     let mut g = p.lock().unwrap();
                     g.0 = g.0.max(rss);
-                    g.1 = g.1.max(gtt + vram);
+                    g.1 = g.1.max(gpu);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -340,15 +358,14 @@ fn long_context_costs() {
     assert_eq!(checkpoint.execution.backend.as_str(), cli.device.as_str(), "loaded on the asked GPU");
     let model = &checkpoint.model;
     eprintln!("device: {:?}", checkpoint.execution.backend);
-    let sampler = Sampler::start();
+    let sampler = Sampler::start(model.device());
     let ids = needle_prompt(&checkpoint.tokenizer, 30_500);
     let (load_rss, load_gpu) = sampler.take();
-    let (gpu0, vram0) = gpu_bytes();
-    eprintln!(
-        "{}",
-        serde_json::json!({"phase": "loaded", "peak_rss_mib": mib(load_rss), "peak_gpu_mib": mib(load_gpu),
-                           "gtt_mib": mib(gpu0), "vram_mib": mib(vram0)})
-    );
+    let mut loaded = serde_json::json!({"phase": "loaded", "peak_rss_mib": mib(load_rss), "peak_gpu_mib": mib(load_gpu)});
+    for (part, bytes) in gpu_parts(model.device()) {
+        loaded[format!("{part}_mib")] = mib(bytes).into();
+    }
+    eprintln!("{loaded}");
     const CHUNK: usize = 128;
     const DECODE: usize = 128;
     let argmax = |t: &candle_core::Tensor| -> u32 {
@@ -371,7 +388,7 @@ fn long_context_costs() {
         .map(|v| v.split(',').map(|d| d.trim().parse().expect("a depth")).collect())
         .unwrap_or_else(|_| vec![128, 8192, 16384, 30_000]);
     for depth in depths {
-        let base = gpu_bytes();
+        let base = gpu_bytes(model.device());
         let mut state = model.new_state();
         let begin = Instant::now();
         let mut logits = None;
@@ -382,7 +399,7 @@ fn long_context_costs() {
         logits.device().synchronize().unwrap();
         let prefill_s = begin.elapsed().as_secs_f64();
         let (prefill_rss, prefill_gpu) = sampler.take();
-        let held = gpu_bytes();
+        let held = gpu_bytes(model.device());
         let mut token = argmax(&logits);
         let begin = Instant::now();
         for _ in 0..DECODE {
@@ -403,7 +420,7 @@ fn long_context_costs() {
                 "peak_gpu_mib_prefill": mib(prefill_gpu),
                 "peak_rss_mib_decode": mib(decode_rss),
                 "peak_gpu_mib_decode": mib(decode_gpu),
-                "state_gpu_delta_mib": mib((held.0 + held.1).saturating_sub(base.0 + base.1)),
+                "state_gpu_delta_mib": mib(held.saturating_sub(base)),
                 // 6 attention layers x K and V x 8 KV heads x 64 wide x f32,
                 // at the power-of-two capacity the KV allocator rounds to.
                 "state_kv_capacity_mib": mib(6 * 2 * 8 * 64 * 4 * (depth.max(128).next_power_of_two().min(model.context_length())) as u64),
@@ -414,11 +431,11 @@ fn long_context_costs() {
         // What the process still holds with no state alive: the ROCm
         // allocator parks freed blocks per size bucket and never returns
         // them, and prefill's score tensors take a new size every chunk.
-        let after = gpu_bytes();
+        let after = gpu_bytes(model.device());
         eprintln!(
             "{}",
-            serde_json::json!({"depth": depth, "gpu_mib_after_drop": mib(after.0 + after.1),
-                               "parked_growth_mib": mib((after.0 + after.1).saturating_sub(base.0 + base.1))})
+            serde_json::json!({"depth": depth, "gpu_mib_after_drop": mib(after),
+                               "parked_growth_mib": mib(after.saturating_sub(base))})
         );
     }
     // The host builds each chunk's causal mask as a Vec<u8> of

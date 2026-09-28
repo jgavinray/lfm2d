@@ -179,11 +179,19 @@ fn an_adjudicator_booted_with_no_specs_serves_the_first_upload() {
     let mut adjudicator = support::load_adjudicator(&cli);
     let ok = || Ok(());
     assert!(adjudicator.menu().is_empty(), "no --opinion-spec, no menu entries");
-    // The identity names the GPU target and the candle build, not just
-    // "rocm": numbers do not transfer between targets or fork revisions.
+    // The identity names the GPU target and the toolchain, not just the
+    // backend: numbers do not transfer between targets or builds.
     let info = adjudicator.info();
-    assert!(info.device.starts_with("rocm:gfx"), "device identity: {}", info.device);
-    assert!(info.device.contains(":hip"), "device identity names the HIP toolchain: {}", info.device);
+    let parts: &[&str] = match support::gpu_backend().as_str() {
+        "rocm" => &["rocm:gfx", ":hip"],
+        // CUDA's driver JIT-compiles candle's PTX, so the driver counts too.
+        "cuda" => &["cuda:sm_", ":nvcc", ":drv"],
+        other => panic!("no device identity is defined for {other} yet"),
+    };
+    assert!(info.device.starts_with(parts[0]), "device identity: {}", info.device);
+    for part in &parts[1..] {
+        assert!(info.device.contains(part), "device identity names {part}: {}", info.device);
+    }
 
     let request = |spec: Option<&str>| -> AdjudicateRequest {
         let mut body = serde_json::json!({"input": "Hi, what are your store hours?", "max_tokens": 64});
