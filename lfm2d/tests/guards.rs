@@ -104,7 +104,7 @@ fn a_reachable_floor_lets_the_test_run() {
 #[test]
 fn real_model_tests_name_a_gpu_backend_never_cpu_or_auto() {
     assert_eq!(support::gpu_backend_from(None), Ok("rocm"));
-    for good in ["rocm", "cuda", "metal"] {
+    for good in ["rocm", "cuda", "metal", "sycl"] {
         assert_eq!(support::gpu_backend_from(Some(good)), Ok(good));
     }
     for bad in ["cpu", "auto", "", "ROCm"] {

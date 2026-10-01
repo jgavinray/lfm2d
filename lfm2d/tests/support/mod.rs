@@ -37,9 +37,9 @@ pub const TEST_CONTEXT: usize = 2048;
 /// backend we run today). `cpu`, `auto` and anything else are refused.
 pub fn gpu_backend_from(value: Option<&str>) -> Result<&str, String> {
     match value.unwrap_or("rocm") {
-        backend @ ("rocm" | "cuda" | "metal") => Ok(backend),
+        backend @ ("rocm" | "cuda" | "metal" | "sycl") => Ok(backend),
         other => Err(format!(
-            "{GPU_ENV}={other:?}: real 8B tests run on an explicit GPU backend (rocm, cuda or metal), \
+            "{GPU_ENV}={other:?}: real 8B tests run on an explicit GPU backend (rocm, cuda, metal or sycl), \
              never cpu or auto: the CPU MoE dequantizes every expert to f32 (~29 GB) and grows \
              linearly with tokens"
         )),
