@@ -51,14 +51,12 @@ reference. Two limits apply: the grouped-prefill MoE kernel is ROCm/CUDA-only,
 so SYCL selects the indexed path (`supports_grouped_moe` is false). F8E4M3 is
 unimplemented and errors loudly rather than computing.
 
-Candle core/nn are pinned together to the published `tobert/candle` revision in
-the root manifest because crates.io 0.11 lacks ROCm. A clean checkout can fetch
-this revision without the ignored vendor tree. The `sycl` feature needs the
-`lfm25-sycl-xe` revision (not yet pushed). Until it is, each host carries a
-machine-local `.cargo/config.toml` (git-excluded) that patches the three candle
-crates to a `file://` clone of that branch — a git source, not a `path`, because
-`build.rs` names the candle build from `Cargo.lock`. It also needs oneAPI with
-`icpx` on `PATH`, and an Intel GPU with the Level Zero runtime.
+Candle core/nn/transformers are pinned together to one revision of our fork
+(`jgavinray/candle`, branch `lfm25-sycl-xe`) because crates.io 0.11 lacks ROCm
+and carries no SYCL backend. That revision is the previous pin plus the SYCL
+work, so a ROCm or CUDA build gets the same code it had before. The `sycl`
+feature builds against it directly and needs oneAPI with `icpx` on `PATH` and an
+Intel GPU with the Level Zero runtime.
 
 `auto` tries compiled backends in ROCm/CUDA/Metal/SYCL order, then uses CPU if
 device initialization is unavailable. Every failed probe/reason is logged,

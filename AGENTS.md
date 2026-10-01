@@ -66,7 +66,7 @@ Level Zero runtime. What keeps a port cheap:
 
 - lfm2d itself is backend-neutral: the only backend-gated code is
   `lfm2d/src/device.rs`. The porting work lives in our candle fork
-  (`tobert/candle`, pinned in `Cargo.toml`).
+  (`jgavinray/candle`, branch `lfm25-sycl-xe`, pinned in `Cargo.toml`).
 - ROCm compiles candle's own `candle-kernels/src/*.cu` through hipcc, so a
   kernel change goes in the shared source with arch guards
   (`RDNA2`/`RDNA3`), not in a ROCm-only copy. The generic path stays the
