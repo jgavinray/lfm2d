@@ -19,6 +19,41 @@ fn main() {
         panic!("{} has no candle-core package with a source; cannot name the candle build", lock.display())
     });
     println!("cargo:rustc-env=LFM2D_CANDLE_REV={rev}");
+
+    // The SYCL kernels link as `libcandle_sycl.so` from candle-sycl-kernels'
+    // OUT_DIR. That crate adds an rpath for its own targets, but a downstream
+    // binary does not inherit it: `cargo test` papers over this with a
+    // LD_LIBRARY_PATH, and a daemon started by anything else fails to load the
+    // library. Add the rpath here, where the final link happens.
+    if std::env::var_os("CARGO_FEATURE_SYCL").is_some() {
+        if let Some(dir) = sycl_kernel_dir() {
+            println!("cargo:rerun-if-changed={}", dir.display());
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+        } else {
+            panic!("sycl feature is on but no candle-sycl-kernels build directory holds libcandle_sycl.so");
+        }
+    }
+}
+
+/// `target/<profile>/build/candle-sycl-kernels-<hash>/out`, found from this
+/// build script's own OUT_DIR (`target/<profile>/build/lfm2d-<hash>/out`).
+fn sycl_kernel_dir() -> Option<std::path::PathBuf> {
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").ok()?);
+    let build = out.parent()?.parent()?;
+    let mut found: Vec<_> = std::fs::read_dir(build)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("candle-sycl-kernels-"))
+        })
+        .map(|p| p.join("out"))
+        .filter(|p| p.join("libcandle_sycl.so").is_file())
+        .collect();
+    found.sort();
+    found.pop()
 }
 
 /// The git commit after `#` for a git source, or `crates.io:<version>` for a
