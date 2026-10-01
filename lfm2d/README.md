@@ -54,8 +54,11 @@ unimplemented and errors loudly rather than computing.
 Candle core/nn are pinned together to the published `tobert/candle` revision in
 the root manifest because crates.io 0.11 lacks ROCm. A clean checkout can fetch
 this revision without the ignored vendor tree. The `sycl` feature needs the
-`lfm25-sycl-xe` revision (not yet pushed; build with a local `[patch]` until it
-is), oneAPI with `icpx` on `PATH`, and an Intel GPU with the Level Zero runtime.
+`lfm25-sycl-xe` revision (not yet pushed). Until it is, each host carries a
+machine-local `.cargo/config.toml` (git-excluded) that patches the three candle
+crates to a `file://` clone of that branch — a git source, not a `path`, because
+`build.rs` names the candle build from `Cargo.lock`. It also needs oneAPI with
+`icpx` on `PATH`, and an Intel GPU with the Level Zero runtime.
 
 `auto` tries compiled backends in ROCm/CUDA/Metal/SYCL order, then uses CPU if
 device initialization is unavailable. Every failed probe/reason is logged,
