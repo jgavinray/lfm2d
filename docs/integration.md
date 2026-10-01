@@ -71,10 +71,12 @@ on its own data, per spec, and refits when `snapshot_id` changes —
 calibration does not transfer between specs, and the failure is silent.
 `snapshot_id` covers the weights, tokenizer, template, rendered prefix,
 repetition penalty and spec, and since 2026-09-24 the device target
-(`GET /v1/adjudicator`'s `device`, e.g. `rocm:gfx1151:hip7.2` or
-`cuda:sm_121:nvcc13.0:drv580.173.02`) and the candle build (`candle_rev`),
-because the same weights give different numbers on another GPU target,
-kernel build or, on CUDA, driver. On Metal `device` is still the bare
+(`GET /v1/adjudicator`'s `device`, e.g. `rocm:gfx1151:hip7.2`,
+`cuda:sm_121:nvcc13.0:drv580.173.02`, or `sycl:2026.1:Intel(R) Arc(TM) Pro B70
+Graphics`) and the candle build (`candle_rev`), because the same weights give
+different numbers on another GPU target, kernel build or, on CUDA, driver. The
+SYCL identity names the oneAPI compiler that built the kernels and the device
+the selected ordinal resolved to. On Metal `device` is still the bare
 backend name.
 Invariant 5 still holds for scores from the encoder heads; an opinion is a
 different instrument with this contract of its own.

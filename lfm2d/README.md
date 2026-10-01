@@ -35,16 +35,29 @@ target/release/lfm2d --device auto --threads 8 \
   --embedder-dir '.models/LFM2.5-Embedding-350M' --bind-addr '127.0.0.1:8088'
 ```
 
-Optional `cuda` and `metal` features expose those Candle backends too. ROCm
-on the Radeon 8060S is hardware-tested here, and since 2026-09-27 CUDA on
-the DGX Spark (GB10, sm_121, CUDA 13.0, aarch64): the encoder heads' CPU/GPU
-parity, `demo/e2e.py` and the real 8B suite pass there, prefill on the same
-grouped MoE kernels as ROCm (see `docs/lfm25-grouped-prefill.md`). Metal is
-not verified. Candle core/nn are pinned together to the published
-`tobert/candle` revision in the root manifest because crates.io 0.11 lacks
-ROCm. A clean checkout can fetch this revision without the ignored vendor tree.
+Optional `cuda`, `metal`, and `sycl` features expose the corresponding Candle
+backends. ROCm on the Radeon 8060S is hardware-tested. CUDA on the DGX Spark
+(GB10, sm_121, CUDA 13.0, aarch64) is hardware-tested as of 2026-09-27. On the
+DGX Spark, encoder heads show CPU/GPU parity, `demo/e2e.py` passes, and the real
+8B suite passes. Prefill uses the same grouped MoE kernels as ROCm (see
+`docs/lfm25-grouped-prefill.md`). Metal is not verified.
 
-`auto` tries compiled backends in ROCm/CUDA/Metal order, then uses CPU if
+SYCL on Intel Arc (Xe2) is new. It arrives on the fork branch `lfm25-sycl-xe`,
+built against oneAPI 2026.1 (icpx, Level Zero), and is hardware-tested on an Arc
+Pro B70. On that GPU, the library's tensor and quantized suites pass. The 350M
+Prompt-Router head passes its clause-routing tests. The tiny LFM2 MoE fixture
+passes end-to-end through the indexed path, whose matvec matches the CPU
+reference. Two limits apply: the grouped-prefill MoE kernel is ROCm/CUDA-only,
+so SYCL selects the indexed path (`supports_grouped_moe` is false). F8E4M3 is
+unimplemented and errors loudly rather than computing.
+
+Candle core/nn are pinned together to the published `tobert/candle` revision in
+the root manifest because crates.io 0.11 lacks ROCm. A clean checkout can fetch
+this revision without the ignored vendor tree. The `sycl` feature needs the
+`lfm25-sycl-xe` revision (not yet pushed; build with a local `[patch]` until it
+is), oneAPI with `icpx` on `PATH`, and an Intel GPU with the Level Zero runtime.
+
+`auto` tries compiled backends in ROCm/CUDA/Metal/SYCL order, then uses CPU if
 device initialization is unavailable. Every failed probe/reason is logged,
 and execution metadata reports the **selected** backend. Use `--device cpu`
 to force CPU or `--device rocm` (etc.) to require a GPU; an explicit GPU never

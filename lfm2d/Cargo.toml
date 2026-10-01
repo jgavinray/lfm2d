@@ -10,6 +10,7 @@ default = []
 rocm = ["lfm2-encoder/rocm", "candle-transformers/rocm"]
 cuda = ["lfm2-encoder/cuda", "candle-transformers/cuda", "dep:candle-kernels"]
 metal = ["lfm2-encoder/metal", "candle-transformers/metal"]
+sycl = ["lfm2-encoder/sycl", "candle-transformers/sycl"]
 
 [dependencies]
 lfm2-encoder = { path = ".." }
