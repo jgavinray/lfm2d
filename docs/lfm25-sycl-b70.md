@@ -66,3 +66,19 @@ geometry is not the lever. If decode latency on the B70 needs to come down,
 the next work is launch batching across layers (host-side), not kernel
 arithmetic. The harness (`tests/bench_decode.rs`) and the
 `enqueue`-beside-device-time output are the instruments for that round.
+
+## Update 2026-10-02, later: grouped MoE prefill (the prefill win, landed)
+
+The prefill-side lever the first round pointed at is now implemented and
+merged (`jgavinray/lfm25-sycl-xe` `1775caf4`): at `batch*topk >= 64` tasks the
+indexed MoE call dequantizes the expert stack to f16 once (cached on the
+storage), gathers task rows, runs one f16 GEMM per expert and scatters back —
+**before** the row-per-task expansion, which alone cost 3.5 s of d2d copies at
+batch 512.
+
+Measured, gate_up 3584×2048 Q5_K, batch 512, B70: **29.8 ms (integer mat-vec)
+→ 3.2 ms warm-cache / 2.9–3.0 ms cold**, ~9×. Correctness: the full
+indexed_moe battery plus a stage-decomposition test; the f16 GEMM carries
+k-scaled error (0.6·√k tolerance, dtype-gated), reviewed by DeepSeek v4.1
+(dispatch-before-expansion, input_dim1 guard, gather mapping, tolerance gate)
+and an internal agent pass. Both reviews' findings are applied in `1775caf4`.
