@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-02",
+  "scope": "SYCL decode-path mat-vec on Intel Arc Pro B70 (sycl:2026.1): fused sub-group geometry A/B and persistent scratch",
+  "device": "Intel(R) Arc(TM) Pro B70 Graphics, 256 CU, 31 GiB, sub-groups 16/32, host hyper03",
+  "snapshot_id": "sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics @ candle jgavinray/lfm25-sycl-xe 5e5c597d..e112b15c",
+  "harness": "candle-sycl-kernels/tests/bench_decode.rs (added with e112b15c): real 8B-A1B shapes, wall-clock per call over 200 calls, 5 warmup; A/B run interleaved on the same session, min-of-N reported and every round consistent",
+  "before": "candle-sycl-kernels @ 5e5c597d (two-pass chunked mat-vec, pooled scratch per call)",
+  "after": "candle-sycl-kernels @ e112b15c (same two-pass geometry, persistent per-queue scratch, parallel build.rs)",
+  "results_gb_s": {
+    "dense_gate_up_14336x2048_Q5K": {"before": 98.8, "after_min_of_4": 202.5, "after_max_of_4": 203.9, "note": "before rounds varied 186-210 (first-run IGC JIT); after stable 199-204; both variants device-equal"},
+    "dense_down_2048x7168_Q5K": {"before": 179.2, "after": 179.0, "delta": "0"},
+    "lm_head_128256x2048_Q6K": {"before": 235.7, "after": 222.7, "delta_pct": -5.5, "note": "sub-group variant; two-pass+scratch restores 235.7"},
+    "routed_gate_up_3584x2048_Q5K_top4": {"before": 218.9, "after_sg_variant": 221.6, "after_final": 218.7},
+    "routed_down_2048x1792_Q5K_top4": {"before": 172.0, "after_sg_variant": 164.4, "after_final": 172.4}
+  },
+  "enqueue_us_per_call": {
+    "before": 20.0,
+    "after_sg_variant": 13.7,
+    "after_final_scratch_only": 21.1,
+    "note": "sg variant: 3 launches + 3 pooled allocs -> 1 launch + 0 allocs; final state keeps 3 launches but cached scratch; measured over 200-call stretches"
+  },
+  "rejected": {
+    "sub_group_fused_geometry": "SG16-per-row with 2-row packing when nblk<=8: device-equal on routed shapes, +6..8% on dense down and lm_head (device-bound), -32% enqueue. Rejected because every decode shape is device-bound on this device; geometry reverted, scratch cache kept. mask-8 permute_group_by_xor crashes IGC 2026.1 during JIT (SIGSEGV in libigc.so.2); masks <=4 are safe.",
+    "one_workitem_per_row_serial_dot": "starves the GPU: dense down 2048 work-items on 256 CU -> 3x slower than baseline"
+  },
+  "verification": [
+    "candle-sycl-kernels smoke 9/9 (device, alloc, gemm, mmvq, launch overhead)",
+    "candle-sycl-kernels bench_decode::q8_0_matches_reference (independent hand-decoded Q8_0 reference, 1792x2048)",
+    "candle-core quantized_tests sycl arm 26/26 (QMatMul vs CPU reference, all dtypes)",
+    "candle-core indexed_moe_tests sycl arm 1/1",
+    "lfm2d device_real::all_heads_agree_between_cpu_and_explicit_gpu with LFM2D_TEST_GPU=sycl (all encoder heads CPU vs B70, cosine > 0.999, spans exact)"
+  ],
+  "kernel_build": "build.rs compiles the 13 SYCL translation units concurrently (was a sequential loop); full kernels-crate rebuild ~2.5 min wall on 64 cores",
+  "conclusion": "The B70 decode mat-vec was not kernel-bound: two-pass geometry is at the practical roofline (lm_head 551 GB/s effective on 504 MB; 686 GB/s peak measured on q4_0 4096x4096), so the kept optimization is host-side (persistent scratch). Sub-group fusion is a real win only where launches dominate; on this device it is not. Next lever, if decode latency matters, is per-layer launch batching, not kernel geometry.",
+  "memory_guard": "not armed for the kernels-crate benches; the lfm2d e2e arms it (default 8 GiB floor)"
+}
