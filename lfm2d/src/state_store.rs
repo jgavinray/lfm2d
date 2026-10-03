@@ -11,6 +11,11 @@
 //! so a count alone never bounded the memory: 16 described states across 8
 //! specs at a 32k context could be ~100 GiB.
 //!
+//! An entry may be pinned (a held context, `POST /v1/contexts` with `pin`):
+//! eviction passes over it, so pins may hold at most half the budget, and an
+//! insert that could only fit by evicting a pin is refused before anything
+//! is evicted.
+//!
 //! Pure bookkeeping (no model), so the rules are unit-tested here. Values
 //! are `Arc`s: a job holds what it got, so an eviction afterwards never
 //! pulls a state out from under it.
@@ -27,6 +32,7 @@ struct Entry<T> {
     id: String,
     group: Option<String>,
     bytes: usize,
+    pinned: bool,
     value: Arc<T>,
 }
 impl<T> StateStore<T> {
@@ -41,6 +47,41 @@ impl<T> StateStore<T> {
     }
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+    /// Bytes held by pinned entries.
+    pub(crate) fn pinned_bytes(&self) -> usize {
+        self.entries.iter().filter(|e| e.pinned).map(|e| e.bytes).sum()
+    }
+    /// Whether `id` is held pinned; `None` when it is not held.
+    pub(crate) fn is_pinned(&self, id: &str) -> Option<bool> {
+        self.entries.iter().find(|e| e.id == id).map(|e| e.pinned)
+    }
+    /// Pin or unpin a held entry. Pins may hold at most half the budget: a
+    /// pin past that is refused and changes nothing. `Ok(false)` when `id`
+    /// is not held.
+    pub(crate) fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<bool, String> {
+        let pinned_bytes = self.pinned_bytes();
+        let budget = self.budget;
+        let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) else {
+            return Ok(false);
+        };
+        if pinned && !entry.pinned && pinned_bytes + entry.bytes > budget / 2 {
+            return Err(format!(
+                "pinning {} bytes would put {} bytes under pins, past half the budget ({} bytes)",
+                entry.bytes,
+                pinned_bytes + entry.bytes,
+                budget / 2
+            ));
+        }
+        entry.pinned = pinned;
+        Ok(true)
+    }
+    /// Drop `id`, pinned or not; returns its value when it was held.
+    pub(crate) fn remove(&mut self, id: &str) -> Option<Arc<T>> {
+        let at = self.entries.iter().position(|e| e.id == id)?;
+        let old = self.entries.remove(at).expect("position came from this deque");
+        self.used -= old.bytes;
+        Some(old.value)
     }
     /// The entry, recency untouched.
     pub(crate) fn peek(&self, id: &str) -> Option<&Arc<T>> {
@@ -70,7 +111,8 @@ impl<T> StateStore<T> {
     /// state and there is nothing to replace. A group capped at 0 holds
     /// nothing. An entry larger than the whole budget is refused, never
     /// admitted by emptying the store for something that still would not
-    /// fit.
+    /// fit, and so is one that could only fit by evicting a pin. Pinned
+    /// entries are never evicted, not even by their group's cap.
     pub(crate) fn insert_in(
         &mut self,
         id: String,
@@ -87,32 +129,44 @@ impl<T> StateStore<T> {
                 self.budget
             ));
         }
+        let pinned = self.pinned_bytes();
+        if pinned + bytes > self.budget {
+            return Err(format!(
+                "an entry of {bytes} bytes does not fit beside {pinned} pinned bytes in a budget of {} bytes",
+                self.budget
+            ));
+        }
         let mut evicted = Vec::new();
         if let Some((group, cap)) = group {
             if cap == 0 {
                 return Ok(evicted);
             }
             while self.entries.iter().filter(|e| e.group.as_deref() == Some(group)).count() >= cap {
-                let at = self
-                    .entries
-                    .iter()
-                    .position(|e| e.group.as_deref() == Some(group))
-                    .expect("the group has entries");
+                let Some(at) = self.entries.iter().position(|e| e.group.as_deref() == Some(group) && !e.pinned)
+                else {
+                    break;
+                };
                 let old = self.entries.remove(at).expect("position came from this deque");
                 self.used -= old.bytes;
                 evicted.push(old.id);
             }
         }
         while self.used + bytes > self.budget {
-            let old = self.entries.pop_front().expect("used > 0 means an entry is held");
+            let at = self
+                .entries
+                .iter()
+                .position(|e| !e.pinned)
+                .expect("pinned + bytes <= budget, so an unpinned entry is left to evict");
+            let old = self.entries.remove(at).expect("position came from this deque");
             self.used -= old.bytes;
             evicted.push(old.id);
         }
         self.used += bytes;
-        self.entries.push_back(Entry { id, group: group.map(|(g, _)| g.to_owned()), bytes, value });
+        self.entries.push_back(Entry { id, group: group.map(|(g, _)| g.to_owned()), bytes, pinned: false, value });
         Ok(evicted)
     }
-    /// Drop every entry whose id fails `keep`; returns how many went.
+    /// Drop every entry whose id fails `keep`, pinned or not; returns how
+    /// many went.
     pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) -> usize {
         let before = self.entries.len();
         let mut used = 0;
@@ -174,6 +228,54 @@ mod tests {
         let held = store.get("a").unwrap();
         assert_eq!(store.insert("b".into(), 10, Arc::new(vec![])).unwrap(), ["a"]);
         assert_eq!(*held, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_pinned_entry_is_never_evicted_and_pins_hold_at_most_half() {
+        let mut store = StateStore::new(100);
+        store.insert("p".into(), 40, Arc::new(0)).unwrap();
+        assert_eq!(store.set_pinned("p", true), Ok(true));
+        assert_eq!(store.is_pinned("p"), Some(true));
+        store.insert("a".into(), 40, Arc::new(1)).unwrap();
+        // `p` is the least recently used, but pinned: `a` goes instead.
+        assert_eq!(store.insert("b".into(), 40, Arc::new(2)).unwrap(), ["a"]);
+        assert!(store.peek("p").is_some());
+        // Past half the budget under pins: refused, nothing changes.
+        let err = store.set_pinned("b", true).unwrap_err();
+        assert!(err.contains("half the budget"), "{err}");
+        assert_eq!(store.is_pinned("b"), Some(false));
+        // Something that could only fit by evicting the pin is refused
+        // before anything is evicted.
+        let err = store.insert("huge".into(), 61, Arc::new(3)).unwrap_err();
+        assert!(err.contains("pinned"), "{err}");
+        assert!(store.peek("b").is_some(), "a refusal evicts nothing");
+        // Unpinned, it is ordinary again.
+        assert_eq!(store.set_pinned("p", false), Ok(true));
+        assert_eq!(store.insert("huge".into(), 61, Arc::new(3)).unwrap(), ["p", "b"]);
+        assert_eq!(store.set_pinned("gone", true), Ok(false));
+    }
+
+    #[test]
+    fn remove_drops_an_entry_pinned_or_not_and_frees_its_bytes() {
+        let mut store = StateStore::new(100);
+        store.insert("a".into(), 30, Arc::new(1)).unwrap();
+        store.insert("b".into(), 20, Arc::new(2)).unwrap();
+        store.set_pinned("a", true).unwrap();
+        assert_eq!(store.remove("a").as_deref(), Some(&1));
+        assert_eq!((store.used(), store.pinned_bytes(), store.len()), (20, 0, 1));
+        assert!(store.remove("a").is_none());
+        assert_eq!(store.is_pinned("a"), None);
+    }
+
+    #[test]
+    fn a_group_cap_never_evicts_a_pin() {
+        let mut store = StateStore::new(100);
+        store.insert_in("g1".into(), Some(("g", 1)), 10, Arc::new(1)).unwrap();
+        store.set_pinned("g1", true).unwrap();
+        // The group is at its cap, but its only member is pinned: it stays,
+        // and the group runs over its count rather than lose a pin.
+        assert!(store.insert_in("g2".into(), Some(("g", 1)), 10, Arc::new(2)).unwrap().is_empty());
+        assert!(store.peek("g1").is_some() && store.peek("g2").is_some());
     }
 
     /// A group's cap evicts within the group first, least recently used
