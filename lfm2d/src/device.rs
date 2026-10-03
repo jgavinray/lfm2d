@@ -10,13 +10,14 @@ pub enum DeviceArg {
     Rocm,
     Cuda,
     Metal,
+    Sycl,
 }
 
 impl DeviceArg {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto", Self::Cpu => "cpu", Self::Rocm => "rocm",
-            Self::Cuda => "cuda", Self::Metal => "metal",
+            Self::Cuda => "cuda", Self::Metal => "metal", Self::Sycl => "sycl",
         }
     }
 }
@@ -87,6 +88,7 @@ impl ExecutionDevice {
             #[cfg(feature = "rocm")] DeviceArg::Rocm,
             #[cfg(feature = "cuda")] DeviceArg::Cuda,
             #[cfg(feature = "metal")] DeviceArg::Metal,
+            #[cfg(feature = "sycl")] DeviceArg::Sycl,
         ];
         let mut initialized = None;
         let (backend, selection_reasons) = select_with(requested, &compiled, |backend| {
@@ -105,8 +107,9 @@ impl ExecutionDevice {
             device_type: if self.device.is_cpu() { "cpu" } else { "gpu" }.into(),
             backend: self.backend.as_str().into(),
             // The selected device's own identity, only where it names more
-            // than the backend (ROCm and CUDA today); never the host's installed GPU
-            // read some other way, which need not be the one selected.
+            // than the backend (ROCm, CUDA and SYCL); never the host's
+            // installed GPU read some other way, which need not be the one
+            // selected.
             device_name: (self.identity != self.backend.as_str()).then(|| self.identity.clone()),
             dtype: format!("{dtype:?}").to_lowercase(),
         }
@@ -117,6 +120,19 @@ fn identity_of(device: &Device, backend: DeviceArg) -> Result<String, String> {
     match device {
         #[cfg(feature = "rocm")]
         Device::Rocm(d) => Ok(format!("rocm:{}:hip{}", d.arch(), d.hip_version())),
+        #[cfg(feature = "sycl")]
+        Device::Sycl(d) => {
+            // oneAPI 2026.x: the compiler release that built libcandle_sycl.so
+            // (its kernels JIT nothing at runtime), plus the GPU's own name —
+            // "sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics".
+            let info = d
+                .queue()
+                .device_info()
+                .map_err(|e| format!("sycl identity: device info: {e}"))?;
+            let icpx = std::env::var("CANDLE_SYCL_ICPX_VERSION")
+                .unwrap_or_else(|_| "2026.1".into());
+            Ok(format!("sycl:{icpx}:{}", info.name))
+        }
         #[cfg(feature = "cuda")]
         Device::Cuda(d) => {
             let capability = d.cuda_stream().context().compute_capability()
@@ -180,6 +196,8 @@ fn initialize(backend: DeviceArg, ordinal: usize) -> Result<Device, String> {
         DeviceArg::Cuda => Device::new_cuda(ordinal).map_err(|e| e.to_string()),
         #[cfg(feature = "metal")]
         DeviceArg::Metal => Device::new_metal(ordinal).map_err(|e| e.to_string()),
+        #[cfg(feature = "sycl")]
+        DeviceArg::Sycl => Device::new_sycl(ordinal).map_err(|e| e.to_string()),
         _ => Err(format!("{} is not a compiled GPU backend", backend.as_str())),
     }
 }

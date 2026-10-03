@@ -30,10 +30,10 @@ fn close(cpu: f32, gpu: f32) {
 }
 
 #[test]
-#[ignore = "run demo/test_devices.sh <rocm|cuda|metal> on a GPU host"]
+#[ignore = "run demo/test_devices.sh <rocm|cuda|metal|sycl> on a GPU host"]
 fn all_heads_agree_between_cpu_and_explicit_gpu() {
-    let backend = std::env::var("LFM2D_TEST_GPU").expect("set LFM2D_TEST_GPU to rocm/cuda/metal");
-    assert!(["rocm", "cuda", "metal"].contains(&backend.as_str()), "GPU must be explicit, not auto/CPU");
+    let backend = std::env::var("LFM2D_TEST_GPU").expect("set LFM2D_TEST_GPU to rocm/cuda/metal/sycl");
+    assert!(["rocm", "cuda", "metal", "sycl"].contains(&backend.as_str()), "GPU must be explicit, not auto/CPU");
     support::memory_guard::arm();
     let cpu = RealEngine::load(&arguments("cpu")).expect("load every head on CPU");
     let gpu = RealEngine::load(&arguments(&backend)).expect("load every head on GPU; no skip or fallback");

@@ -6,15 +6,15 @@ name = "lfm2-encoder"
 version = "0.0.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "LiquidAI LFM2.5 bidirectional encoders (embedding, token/sequence classification, routing) on candle — CPU-first, with ROCm/CUDA/Metal features"
+description = "LiquidAI LFM2.5 bidirectional encoders (embedding, token/sequence classification, routing) on candle — CPU-first, with ROCm/CUDA/Metal/SYCL features"
 keywords = ["lfm2", "candle", "encoder", "embeddings", "classifier"]
 categories = ["science"]
 
 [dependencies]
 # Published fork includes the ROCm backend exercised on the local AMD GPU.
 # Pin both crates to one revision so their Device/Tensor types stay identical.
-candle-core = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd" }
-candle-nn = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd" }
+candle-core = { git = "https://github.com/jgavinray/candle", rev = "8135983bad16655731a0d7ca1a1263a5f335b94a" }
+candle-nn = { git = "https://github.com/jgavinray/candle", rev = "8135983bad16655731a0d7ca1a1263a5f335b94a" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -31,6 +31,7 @@ default = []
 rocm = ["candle-core/rocm", "candle-nn/rocm"]
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
 metal = ["candle-core/metal", "candle-nn/metal"]
+sycl = ["candle-core/sycl", "candle-nn/sycl"]
 
 [dev-dependencies]
 # For building a synthetic tokenizer.json in tests/sequence_classification_guards.rs

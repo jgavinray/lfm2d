@@ -28,7 +28,7 @@ class RealDaemonTests(unittest.TestCase):
         cls.endpoint = f"unix://{socket_path}"
         cls.requested_device = os.environ.get("LFM2D_TEST_DEVICE", "cpu")
         cls.expected_device = os.environ.get("LFM2D_EXPECT_DEVICE", cls.requested_device)
-        if cls.expected_device not in ("cpu", "rocm", "cuda", "metal"):
+        if cls.expected_device not in ("cpu", "rocm", "cuda", "metal", "sycl"):
             raise RuntimeError("LFM2D_EXPECT_DEVICE must name an actual backend, not auto")
         log_path = Path(temporary.name) / "server.log"
         log = log_path.open("w")

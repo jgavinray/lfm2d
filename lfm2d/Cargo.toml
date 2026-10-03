@@ -10,15 +10,16 @@ default = []
 rocm = ["lfm2-encoder/rocm", "candle-transformers/rocm"]
 cuda = ["lfm2-encoder/cuda", "candle-transformers/cuda", "dep:candle-kernels"]
 metal = ["lfm2-encoder/metal", "candle-transformers/metal"]
+sycl = ["lfm2-encoder/sycl", "candle-transformers/sycl"]
 
 [dependencies]
 lfm2-encoder = { path = ".." }
-candle-transformers = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd" }
-candle-core = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd" }
-candle-nn = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd" }
+candle-transformers = { git = "https://github.com/jgavinray/candle", rev = "8135983bad16655731a0d7ca1a1263a5f335b94a" }
+candle-core = { git = "https://github.com/jgavinray/candle", rev = "8135983bad16655731a0d7ca1a1263a5f335b94a" }
+candle-nn = { git = "https://github.com/jgavinray/candle", rev = "8135983bad16655731a0d7ca1a1263a5f335b94a" }
 # CUDA only: the PTX candle's kernels were built as, whose header names the
 # nvcc that built them (the device identity, `device.rs`).
-candle-kernels = { git = "https://github.com/tobert/candle", rev = "8c97d3c47102fbe0f09dfee506e5e8394cd0ecfd", optional = true }
+candle-kernels = { git = "https://github.com/jgavinray/candle", rev = "8135983bad16655731a0d7ca1a1263a5f335b94a", optional = true }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
