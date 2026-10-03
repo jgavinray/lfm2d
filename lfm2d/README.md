@@ -127,14 +127,14 @@ CLI flags, each with an env-var fallback (`clap`'s `env` feature):
 | `--socket-path` | `LFM2D_SOCKET_PATH` | Unix domain socket to serve on |
 | `--bind-addr` | `LFM2D_BIND_ADDR` | TCP address to serve on, e.g. `127.0.0.1:8088` |
 | `--threads` | `LFM2D_THREADS` | Size of rayon's global thread pool (candle's matmul runs on it transitively), set BEFORE any model load. Defaults to `std::thread::available_parallelism()` |
-| `--adjudicator-model` | `LFM2D_ADJUDICATOR_MODEL` | LFM2.5-8B-A1B GGUF; with `--adjudicator-tokenizer`, enables the opinion engine (`/v1/opinion`, `/v1/adjudicate`, `/v1/chat`, `/v1/opinion/specs`, `/v1/adjudicator`, `/v1/probe`). Each alone is refused |
+| `--adjudicator-model` | `LFM2D_ADJUDICATOR_MODEL` | LFM2.5-8B-A1B GGUF; with `--adjudicator-tokenizer`, enables the opinion engine (`/v1/opinion`, `/v1/adjudicate`, `/v1/chat`, `/v1/contexts`, `/v1/opinion/specs`, `/v1/adjudicator`, `/v1/probe`). Each alone is refused |
 | `--adjudicator-tokenizer` | `LFM2D_ADJUDICATOR_TOKENIZER` | The matching Hugging Face `tokenizer.json`, checked against the GGUF's vocabulary at load |
 | `--adjudicator-context` | (none) | Context budget including output, default `4096`, range `128`–`32768` (`docs/lfm25-adjudicator.md`, "Context budget") |
 | `--adjudicator-repeat-penalty` | (none) | Sign-aware repetition penalty, default `1.05` (the checkpoint author's), range `1.0`–`2.0`; part of every spec's `snapshot_id` |
 | `--opinion-spec` (repeatable) | `LFM2D_OPINION_SPECS` (comma-separated) | A boot-time spec, named by its file stem. Optional: with none the menu starts empty and fills by upload. Needs the adjudicator. No spec is a default |
 | `--opinion-spec-capacity` | `LFM2D_OPINION_SPEC_CAPACITY` | How many uploaded specs stay resident (LRU), default `8`; boot specs don't count and are never evicted |
 | `--no-probe` | `LFM2D_PROBE` (`0` disables) | Removes `/v1/probe`; `/v1/opinion` and `/v1/adjudicate` are unaffected |
-| `--chat-checkpoint-budget-mib` | `LFM2D_CHAT_CHECKPOINT_BUDGET_MIB` | Memory for chat checkpoints (`/v1/chat`, tail reads), default `16384`; least recently used evicted first; must hold a turn's two checkpoints at the full context |
+| `--chat-checkpoint-budget-mib` | `LFM2D_CHAT_CHECKPOINT_BUDGET_MIB` | Memory for chat checkpoints and held contexts (`/v1/chat`, `/v1/contexts`, tail reads), default `16384`; least recently used evicted first, pins exempt (at most half the budget); must hold a turn's two checkpoints at the full context |
 | `--state-cache-budget-mib` | `LFM2D_STATE_CACHE_BUDGET_MIB` | Memory for every cached model state (ready prompts, described states, chat tail prefixes), default `16384`; least recently used evicted first across specs; the per-spec counts still apply inside it; must hold one full-context state |
 
 Standard OTEL env vars also apply (`OTEL_EXPORTER_OTLP_ENDPOINT`,
@@ -181,6 +181,9 @@ GET  /v1/opinion/specs        the spec menu (boot + uploads)        -- adjudicat
 POST /v1/opinion/specs        body: a spec's exact bytes            -- adjudicator only
 DELETE /v1/opinion/specs/{id}                                       -- adjudicator only
 POST /v1/opinion              {"spec", "state": {"input", "facts"?}, "questions": [...], "context"?: {"checkpoint"}}
+                              | ... "contexts": [id, ...], "pool"?: {"method", "weights"}   -- pooled across contexts
+POST /v1/contexts             {"system"?, "tools"?, "messages": [...], "pin"?}             -- adjudicator only
+GET|DELETE /v1/contexts/{id}                                        -- adjudicator only
 POST /v1/chat                 {"system"?, "tools"?} | {"from"}, "messages": [...], "stream"?  -- adjudicator only
 POST /v1/adjudicate           {"spec", "input", ...}                -- spec required
 ```
@@ -280,12 +283,14 @@ Errors: `{"error": {"message", "type"}}`. `type` is one of:
   this instance never loaded, or `/v1/adjudicate` without a `spec`;
 - `"not_found"` (404) — `/v1/tokenize`'s unknown `model`, an unknown
   `spec` on `/v1/opinion` or `/v1/adjudicate`, `DELETE
-  /v1/opinion/specs/{id}` on nothing loaded, or a chat checkpoint
-  (`/v1/chat`'s `from`, `/v1/opinion`'s `context`) that was evicted or
-  never made. `/v1/probe` names no spec,
+  /v1/opinion/specs/{id}` on nothing loaded, or a chat checkpoint or held
+  context (`/v1/chat`'s `from`, `/v1/opinion`'s `context`/`contexts`,
+  `/v1/contexts/{id}`) that was evicted, deleted or never made. `/v1/probe` names no spec,
   so it never 404s that way; with `--no-probe` the route is absent, a
   plain unmatched-route 404;
 - `"forbidden"` (403) — deleting a boot spec;
+- `"insufficient_storage"` (507) — a pin past half the checkpoint budget,
+  or a checkpoint or context that does not fit beside the pins;
 - `"unprocessable"` (422) — an uploaded spec that parses but cannot be
   served (the load-time refusal text is the message);
 - `"cancelled"` (408) — the client went away before the answer, or the
