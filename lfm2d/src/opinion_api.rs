@@ -453,6 +453,11 @@ pub struct OpinionResponse {
     /// forked. Absent for a read of the spec's own prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<OpinionContext>,
+    /// How many tokens the forked context holds (a tail read only): beside a
+    /// pool, the cue that one context is nearly empty or far longer than the
+    /// rest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<usize>,
     /// The fields generated before the LAST asked slot, as the model wrote
     /// them; an earlier answer was read on a prefix of this description.
     pub described: Vec<DescribedField>,

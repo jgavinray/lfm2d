@@ -92,6 +92,7 @@ impl Generator for Fake {
             prefix: info(),
             spec: request.spec.clone(),
             context: request.context.clone(),
+            context_tokens: Some(100 + self.0.lock().unwrap().reads.len()),
             described: vec![],
             answers: questions
                 .iter()
@@ -196,8 +197,9 @@ async fn every_context_is_read_in_request_order_and_each_question_pooled() {
     assert_eq!(body["pool"], serde_json::json!({"method": "loglinear", "weights": "mass"}));
     let reads = body["reads"].as_array().unwrap();
     assert_eq!(reads.len(), 3);
-    for (read, context) in reads.iter().zip(&order) {
+    for (i, (read, context)) in reads.iter().zip(&order).enumerate() {
         assert_eq!(read["context"]["checkpoint"], *context, "each read echoes its own context");
+        assert_eq!(read["context_tokens"], 101 + i, "and reports its context's length");
     }
     // The pool is crate::pool over the reads' raw numbers: logprobs, and
     // mass as exp(sequence_mass).
@@ -213,6 +215,7 @@ async fn every_context_is_read_in_request_order_and_each_question_pooled() {
     assert_eq!(pooled["agree"], false, "the contexts' top options are report, allow, ask");
     assert_eq!(pooled["spread"], serde_json::json!(want.spread));
     assert_eq!(pooled["leave_one_out"], serde_json::json!(want.leave_one_out));
+    assert_eq!(pooled["weights"], serde_json::json!(want.weights));
     assert!(pooled.get("argmax").is_none() && pooled.get("winner").is_none(), "no winner: {pooled}");
 }
 

@@ -104,6 +104,8 @@ fn held_contexts_and_multi_context_reads_on_the_real_model() {
     let multi = a.opine_contexts(&multi_request, &q, &|| Ok(())).expect("a multi-context read");
     assert_eq!(numbers(&multi.reads[0]), incremental, "read 0 is the one-context read, bit for bit");
     assert_eq!(numbers(&multi.reads[1]), read_after(&mut a, &short.id).unwrap());
+    let lengths: Vec<Option<usize>> = multi.reads.iter().map(|r| r.context_tokens).collect();
+    assert_eq!(lengths, [Some(long.n_tokens), Some(short.n_tokens)], "each read reports its context's length");
     let repooled = lfm2d::opinion_api::pool_reads(&multi.reads, &multi.pool).unwrap();
     assert_eq!(serde_json::to_value(&repooled).unwrap(), serde_json::to_value(&multi.pooled).unwrap());
     for p in &multi.pooled {

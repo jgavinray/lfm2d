@@ -117,6 +117,10 @@ impl PoolSettings {
 pub struct Pooled {
     /// One per option, in the spec's option order; sums to 1.
     pub probs: Vec<f64>,
+    /// The normalised weight each context pooled with, in request order.
+    /// A 0 is a context that did not count (and the `leave_one_out` row
+    /// without the only weighted contexts is `null`).
+    pub weights: Vec<f64>,
     pub agree: bool,
     pub spread: f64,
     /// `leave_one_out[c]`: `probs` without context `c` (empty for one
@@ -234,6 +238,7 @@ pub fn pool(logprobs: &[Vec<f64>], mass: &[f64], settings: &PoolSettings) -> Res
     };
     let probs = combine(settings.method, &ls, &ps, &g)
         .ok_or_else(|| "the weights sum to 0 (every context's mass underflowed?): nothing to pool".to_string())?;
+    let weights = normalized(&g).expect("combine pooled, so the weights sum above 0");
     if probs.iter().any(|p| !p.is_finite()) {
         return Err("every option is ruled out by some weighted context: a log-linear pool has nothing left".into());
     }
@@ -261,7 +266,7 @@ pub fn pool(logprobs: &[Vec<f64>], mass: &[f64], settings: &PoolSettings) -> Res
             })
             .collect()
     };
-    Ok(Pooled { probs, agree, spread, leave_one_out })
+    Ok(Pooled { probs, weights, agree, spread, leave_one_out })
 }
 
 #[cfg(test)]
@@ -496,6 +501,10 @@ mod tests {
         }
         let zero = pool(&l[..2], &[1.0; 2], &settings(Method::Linear, Weights::Given(vec![1.0, 0.0]))).unwrap();
         assert_eq!(zero.leave_one_out[0], None, "dropping the only weighted context leaves nothing to pool");
+        assert_eq!(zero.weights, [1.0, 0.0], "the zero shows the context that did not count");
+        let mass = pool(&l[..2], &[0.75, 0.25], &settings(Method::Linear, Weights::Mass)).unwrap();
+        assert_eq!(mass.weights, [0.75, 0.25]);
+        assert_eq!(pool(&l[..2], &[0.75, 0.25], &PoolSettings::default()).unwrap().weights, [0.5, 0.5]);
     }
 
     #[test]

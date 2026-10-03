@@ -156,6 +156,7 @@ impl Generator for Stub {
         self.0.push(Event::Read(request.state.input.clone()));
         Ok(OpinionResponse {
             prefix: info(),
+            context_tokens: None,
             spec: request.spec.clone(),
             context: request.context.clone(),
             described: vec![],

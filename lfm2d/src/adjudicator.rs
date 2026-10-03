@@ -3104,6 +3104,7 @@ impl Adjudicator {
                 Some(held)
             }
         };
+        let context_tokens = tail.as_ref().map(|held| held.ids.len());
         // The prompt as text (what `rendered_sha256` covers), as ids, the
         // text option stability is checked against (it starts at a control
         // token, so the rest of the prompt cannot change its tokens), and a
@@ -3389,6 +3390,7 @@ impl Adjudicator {
             prefix: spec.info.clone(),
             spec: request.spec.clone(),
             context: request.context.clone(),
+            context_tokens,
             described,
             answers,
             rendered: request.rendered.then(|| format!("{prompt_text}{last_text}")),

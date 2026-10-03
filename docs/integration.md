@@ -247,14 +247,21 @@ holding control-token text is refused (`400`), never escaped.
 request order, and answers `{spec, contexts, reads, pooled, pool,
 queue_ms}`. `reads[c]` is the answer `context: {checkpoint: contexts[c]}`
 gives, bit for bit in every number but `queue_ms`, which is 0 there: the
-job's queue time is the response's own `queue_ms`. `pooled` has one entry per question,
-`{field, options, probs, agree, spread, leave_one_out}`:
+job's queue time is the response's own `queue_ms`. Each read carries
+`context_tokens`, the length of the context it forked, so a caller can see
+a nearly empty context or one far longer than the rest. `pooled` has one
+entry per question, `{field, options, probs, weights, agree, spread,
+leave_one_out}`:
 - `probs` pools each context's option probabilities. `pool.method` is
   `linear` (the weighted average: some context supports it) or
   `loglinear` (the normalised weighted product: the contexts agree on it,
   and any one context can veto an option). `pool.weights` is `uniform`,
   `mass` (each read's `exp(sequence_mass)`), or one weight per context.
   Default: linear, uniform.
+- `weights`: the normalised weight each context pooled with, in request
+  order. A 0 is a context that did not count; leave-one-out drops one
+  context and renormalises the rest, so a context with weight 0 moves
+  nothing, and dropping the only weighted contexts gives a `null` row.
 - `agree`: every context's top option is the same (ties go to the earlier
   option).
 - `spread`: the largest per-option gap between contexts.
