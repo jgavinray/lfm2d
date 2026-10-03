@@ -47,6 +47,6 @@ missing file (most print the `hf download` command too), so a plain
 | Embedding + Router + PII and a GPU (`#[ignore]`d) | `lfm2d/tests/device_real`, via `demo/test_devices.sh` |
 
 `LFM2_MODELS_DIR` and `LFM2_TOKEN_CLF_DIR` point the tests elsewhere
-(a git worktree has no `.models/`). `demo/test_devices.sh <rocm|cuda|metal>`
+(a git worktree has no `.models/`). `demo/test_devices.sh <rocm|cuda|sycl|metal>`
 runs the CPU-vs-GPU agreement gate on a GPU host.
 

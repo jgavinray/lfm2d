@@ -2,7 +2,7 @@
 
 **A System 1 for software, built on LiquidAI's LFM2.5 models.** Rust on
 [candle] with no Python in the serving path, serving from one resident
-process on an AMD GPU.
+process on an AMD, NVIDIA or Intel GPU.
 
 Before an agent runs a command, an app sends an email, or a person acts on
 an idea, something should take a quick look: a fast, cheap first read that
@@ -130,18 +130,28 @@ an email-triage spec.
 
 ## Run it
 
-The opinion engine runs on **ROCm**; it is built and measured on an AMD
-Radeon 8060S (Strix Halo, gfx1151). CUDA and Metal are future ports, and
-the CPU path is a slow reference only. The encoder heads run well on CPU.
-Building needs the ROCm development toolchain and a C compiler (candle-core
-links oniguruma through `tokenizers`).
+The opinion engine runs on a GPU. Each backend is a cargo feature over the
+same code; pick one at build time and name it with `--device`:
+
+| vendor | feature | hardware-tested on | status |
+|---|---|---|---|
+| AMD | `rocm` | Radeon 8060S (Strix Halo, gfx1151) | where we run and measure; production |
+| NVIDIA | `cuda` | DGX Spark (GB10, sm_121, CUDA 13.0, arm64) | encoder parity, e2e and the real 8B suite pass |
+| Intel | `sycl` | Arc Pro B70 (Xe2, oneAPI 2026.1) | encoder parity and every endpoint exercised; one open opinion bug ([daemon README](lfm2d/README.md#problems-noted-not-fixed)) |
+| Apple | `metal` | — | a candle backend; not built or verified here |
+
+The CPU path is a slow reference for the opinion engine; the encoder heads
+run well on CPU. Numbers do not transfer between backends: the same weights
+read differently on each, so `snapshot_id` names the device. Building needs
+that backend's toolchain (ROCm, the CUDA toolkit, or oneAPI with `icpx`)
+and a C compiler (candle-core links oniguruma through `tokenizers`).
 
 ```sh
 # the model and its tokenizer
 hf download LiquidAI/LFM2.5-8B-A1B-GGUF LFM2.5-8B-A1B-Q5_K_M.gguf --local-dir .models/LFM2.5-8B-A1B
 hf download LiquidAI/LFM2.5-8B-A1B tokenizer.json --local-dir .models/LFM2.5-8B-A1B
 
-cargo build --release -p lfm2d --features rocm
+cargo build --release -p lfm2d --features rocm   # or cuda, sycl
 ./target/release/lfm2d --device rocm --bind-addr 127.0.0.1:8088 \
   --adjudicator-model .models/LFM2.5-8B-A1B/LFM2.5-8B-A1B-Q5_K_M.gguf \
   --adjudicator-tokenizer .models/LFM2.5-8B-A1B/tokenizer.json
@@ -186,8 +196,10 @@ embeddings) are in [docs/encoders.md](docs/encoders.md).
 MIT OR Apache-2.0, matching candle. Trunk block implementations are
 adapted from [candle-transformers]' `lfm2.rs` (© the candle authors, MIT
 OR Apache-2.0); attribution retained in source where adapted. The opinion
-engine runs on a [fork of candle](https://github.com/tobert/candle) with
-ROCm support, pinned in `Cargo.toml`.
+engine runs on a [fork of candle](https://github.com/tobert/candle) carrying
+the ROCm backend, the CUDA MoE work and a SYCL backend for Intel GPUs
+(Petr Gadorek's backend, brought up on the LFM2.5 engine by
+[J. Gavin Ray](https://github.com/jgavinray)), pinned in `Cargo.toml`.
 
 [candle]: https://github.com/huggingface/candle
 [candle-transformers]: https://github.com/huggingface/candle/tree/main/candle-transformers

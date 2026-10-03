@@ -35,28 +35,29 @@ target/release/lfm2d --device auto --threads 8 \
   --embedder-dir '.models/LFM2.5-Embedding-350M' --bind-addr '127.0.0.1:8088'
 ```
 
-Optional `cuda`, `metal`, and `sycl` features expose the corresponding Candle
-backends. ROCm on the Radeon 8060S is hardware-tested. CUDA on the DGX Spark
-(GB10, sm_121, CUDA 13.0, aarch64) is hardware-tested as of 2026-09-27. On the
-DGX Spark, encoder heads show CPU/GPU parity, `demo/e2e.py` passes, and the real
-8B suite passes. Prefill uses the same grouped MoE kernels as ROCm (see
-`docs/lfm25-grouped-prefill.md`). Metal is not verified.
+Optional `cuda`, `sycl` and `metal` features build the other Candle
+backends. One code path serves all of them; only `src/device.rs` is
+backend-gated, and the porting work lives in the candle fork.
 
-SYCL on Intel Arc (Xe2) is new. It arrives on the fork branch `lfm25-sycl-xe`,
-built against oneAPI 2026.1 (icpx, Level Zero), and is hardware-tested on an Arc
-Pro B70. On that GPU, the library's tensor and quantized suites pass. The 350M
-Prompt-Router head passes its clause-routing tests. The tiny LFM2 MoE fixture
-passes end-to-end through the indexed path, whose matvec matches the CPU
-reference. Two limits apply: the grouped-prefill MoE kernel is ROCm/CUDA-only,
-so SYCL selects the indexed path (`supports_grouped_moe` is false). F8E4M3 is
-unimplemented and errors loudly rather than computing.
+| backend | build needs | hardware-tested | MoE prefill | device identity |
+|---|---|---|---|---|
+| `rocm` | ROCm toolchain (hipcc, rocBLAS) | Radeon 8060S, gfx1151: everything; production | grouped (shared kernels) | `rocm:gfx1151:hip7.2` |
+| `cuda` | CUDA toolkit (nvcc) | DGX Spark, GB10 sm_121, CUDA 13.0, aarch64, since 2026-09-27: encoder parity, `demo/e2e.py`, real 8B suite | grouped (shared kernels, [docs/lfm25-grouped-prefill.md](../docs/lfm25-grouped-prefill.md)) | `cuda:sm_121:nvcc13.0:drv580.173.02` |
+| `sycl` | oneAPI 2026.1+ (`icpx` on `PATH`), Level Zero, Xe2+ GPU | Arc Pro B70 since 2026-10-02: encoder parity, every endpoint ([docs/lfm2d-b70-endpoint-exercise.md](../docs/lfm2d-b70-endpoint-exercise.md)) | grouped inside `indexed_moe_forward` at `batch*topk >= 64` ([docs/lfm25-sycl-b70.md](../docs/lfm25-sycl-b70.md)) | `sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics` |
+| `metal` | macOS | not verified | — | bare `metal` |
+
+The SYCL path differs from ROCm and CUDA in where the grouped prefill is
+chosen: those two report `supports_grouped_moe` and take routing the engine
+packs once per layer, while SYCL reports `false` and switches to its grouped
+GEMM inside each indexed call. F8E4M3 is unimplemented on SYCL and errors
+loudly. The `sycl` build compiles `candle-sycl-kernels` with `icpx`; a
+plain `cargo build` never touches oneAPI. After a candle revision bump,
+clear `target/release/build/candle-sycl-kernels-*` (see the problems
+list below).
 
 Candle core/nn/transformers are pinned together to one revision of our fork
-(`jgavinray/candle`, branch `lfm25-sycl-xe`) because crates.io 0.11 lacks ROCm
-and carries no SYCL backend. That revision is the previous pin plus the SYCL
-work, so a ROCm or CUDA build gets the same code it had before. The `sycl`
-feature builds against it directly and needs oneAPI with `icpx` on `PATH` and an
-Intel GPU with the Level Zero runtime.
+(`tobert/candle`, branch `lfm25-batch`) because crates.io 0.11 carries no
+ROCm or SYCL backend and none of the MoE kernels.
 
 `auto` tries compiled backends in ROCm/CUDA/Metal/SYCL order, then uses CPU if
 device initialization is unavailable. Every failed probe/reason is logged,
@@ -83,7 +84,7 @@ evaluation.
 Run the mandatory device gate when changing backend selection/execution:
 
 ```sh
-bash demo/test_devices.sh rocm
+bash demo/test_devices.sh rocm   # or cuda, sycl, metal
 ```
 
 It builds once with the chosen backend, compares real embedding/router/PII
@@ -120,7 +121,7 @@ CLI flags, each with an env-var fallback (`clap`'s `env` feature):
 | `--router-dir` | `LFM2D_ROUTER_DIR` | Prompt-Router checkpoint dir; backs `/v1/route` |
 | `--token-classifier-dir` (repeatable) | `LFM2D_TOKEN_CLASSIFIER_DIR` (comma-separated) | `Lfm2TokenClassifier`-shaped checkpoint dir(s) — REPEATABLE, unlike the two heads above; backs `/v1/spans`, `/v1/spans/credentials` |
 | `--dtype` | `LFM2D_DTYPE` | `f32` (default), `f16` or `bf16`, for every head. Read the flag's own help before reaching for `f16`: these checkpoints ship f32 natively, so f16 is a real loss of resolution at ~1.6× latency, and `LFM2.5-Embedding-350M` ships bf16, where bf16→f16 can produce inf/0 rather than rounding. It is a memory lever, not a speed one |
-| `--device` | `LFM2D_DEVICE` | `auto` (default), `cpu`, `rocm`, `cuda`, or `metal`; requires corresponding compiled GPU feature |
+| `--device` | `LFM2D_DEVICE` | `auto` (default), `cpu`, `rocm`, `cuda`, `sycl`, or `metal`; requires corresponding compiled GPU feature |
 | `--device-index` | `LFM2D_DEVICE_INDEX` | GPU ordinal (default `0`); values exceeding the driver's signed 32-bit range are refused |
 | `--log-input-hash` | `LFM2D_LOG_INPUT_HASH` | `true`/`false`, must be spelled out (not a bare flag); default `false`. Attaches a hash of `/v1/spans`/`/v1/spans/credentials` request text — never the text itself — to that call's trace/log span; see "Observability" below |
 | `--socket-path` | `LFM2D_SOCKET_PATH` | Unix domain socket to serve on |
@@ -453,15 +454,15 @@ raw input) confirmed this test actually fails when it should.
 Resource attributes: `service.name`
 (`OTEL_SERVICE_NAME`, default `lfm2d`), `service.version` (crate version),
 `lfm2d.execution.device_type` (`cpu`/`gpu`), `lfm2d.execution.backend`
-(`cpu`/`rocm`/`cuda`/`metal`), `lfm2d.execution.dtype`, and
+(`cpu`/`rocm`/`cuda`/`sycl`/`metal`), `lfm2d.execution.dtype`, and
 `lfm2d.model.<kind>_hash` per loaded model — set once, from
 `main.rs`, AFTER models finish loading (weight hashes aren't known any
 earlier; see `src/telemetry.rs`'s module docs). The same resource is attached
 to traces, metrics, and logs. Device metadata comes from the loaded engine,
 not host hardware inventory; `lfm2d.execution.device_name` carries the
 selected device's identity where the backend can name its target (ROCm:
-`rocm:gfx1151:hip7.2`; CUDA: `cuda:sm_121:nvcc13.0:drv580.173.02`) and is
-omitted elsewhere, and `lfm2d.candle_rev` names
+`rocm:gfx1151:hip7.2`; CUDA: `cuda:sm_121:nvcc13.0:drv580.173.02`; SYCL:
+`sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics`) and is omitted elsewhere, and `lfm2d.candle_rev` names
 the candle build. Metrics:
 `lfm2d.worker.queue_depth` (observable gauge over an `AtomicUsize`,
 incremented on send, decremented when the worker picks a command up),
@@ -540,15 +541,35 @@ decided and why (also in the relevant doc comments):
 
 ## Problems noted, not fixed
 
-- **`snapshot_id` names the GPU target only on ROCm and CUDA.** It hashes
-  the device identity and the candle revision (`CANDLE_REV`, read from
-  `Cargo.lock` by `lfm2d/build.rs`). ROCm's (`rocm:gfx1151:hip7.2`, since
-  2026-09-24) comes from the fork's `RocmDevice::arch()`/`hip_version()`.
-  CUDA's (`cuda:sm_121:nvcc13.0:drv580.173.02`, since 2026-09-27) is the
-  compute capability, the nvcc release in the header of candle's own PTX,
-  and the driver release from `/proc/driver/nvidia/version`: the driver
-  JIT-compiles that PTX, so a driver update can move the numbers. Metal
-  still reports the bare backend name.
+- **`snapshot_id` names the GPU target on ROCm and CUDA, and only part of
+  it on SYCL.** It hashes the device identity and the candle revision
+  (`CANDLE_REV`, read from `Cargo.lock` by `lfm2d/build.rs`). ROCm's
+  (`rocm:gfx1151:hip7.2`, since 2026-09-24) comes from the fork's
+  `RocmDevice::arch()`/`hip_version()`. CUDA's
+  (`cuda:sm_121:nvcc13.0:drv580.173.02`, since 2026-09-27) is the compute
+  capability, the nvcc release in the header of candle's own PTX, and the
+  driver release from `/proc/driver/nvidia/version`: the driver
+  JIT-compiles that PTX, so a driver update can move the numbers. SYCL's
+  (`sycl:<icpx>:<device name>`, since 2026-10-02) reads the compiler release
+  from `CANDLE_SYCL_ICPX_VERSION` at run time, defaulting to `2026.1`, not
+  from the build that made `libcandle_sycl.so`; and the kernels build to
+  SPIR-V that the GPU driver JIT-compiles, so, as on CUDA, the driver
+  release belongs in the identity and is not there yet. Metal still
+  reports the bare backend name.
+- **SYCL: a cold `/v1/opinion` describe runs until the client deadline.**
+  Seen on the B70 (2026-10-02, [docs/lfm2d-b70-endpoint-exercise.md](../docs/lfm2d-b70-endpoint-exercise.md)):
+  with the described-state cache cold, the read holds the worker at one
+  core until `timeout_ms`, then returns `cancelled`; warm reads take 79-97
+  ms. It answers cancellation, so the worker is walking, not deadlocked:
+  `describe_then_read` decodes up to `context_limit` with no budget of its
+  own and logs nothing until it finishes, and the two cold describes that
+  did finish took 17.8 and 25.7 s. Not seen on ROCm or CUDA.
+- **SYCL: a stale kernels library survives a candle bump.**
+  `lfm2d/build.rs` rpaths the newest-named
+  `target/<profile>/build/candle-sycl-kernels-*/out` that holds
+  `libcandle_sycl.so`; with several hash dirs present, name order is not
+  build order. Clear those dirs after a bump until the kernels crate hands
+  its path down directly.
 - **Spec registration telemetry has no source address.** The daemon has
   no `ConnectInfo` wiring, so a registration or eviction log line cannot
   say who uploaded the spec.
