@@ -556,6 +556,14 @@ decided and why (also in the relevant doc comments):
   SPIR-V that the GPU driver JIT-compiles, so, as on CUDA, the driver
   release belongs in the identity and is not there yet. Metal still
   reports the bare backend name.
+- **SYCL: the 8B engine's router bias and conv weights alias freed
+  memory** (found in review 2026-10-03, code-read; not yet reproduced on a
+  device). The fork's `QSyclStorage` hands `dequantize` callers a
+  non-owning view of a per-storage cache, and `quantized_lfm2_moe.rs`
+  dequantizes `exp_probs_b.bias` and `shortconv.conv.weight` from
+  temporary QTensors, so the cache entry returns to the pool while the
+  model still reads it. Encoder parity cannot see it (no QTensor there).
+  Treat 8B numbers measured on SYCL before the fix as suspect.
 - **SYCL: a cold `/v1/opinion` describe runs until the client deadline.**
   Seen on the B70 (2026-10-02, [docs/lfm2d-b70-endpoint-exercise.md](../docs/lfm2d-b70-endpoint-exercise.md)):
   with the described-state cache cold, the read holds the worker at one
@@ -563,7 +571,8 @@ decided and why (also in the relevant doc comments):
   ms. It answers cancellation, so the worker is walking, not deadlocked:
   `describe_then_read` decodes up to `context_limit` with no budget of its
   own and logs nothing until it finishes, and the two cold describes that
-  did finish took 17.8 and 25.7 s. Not seen on ROCm or CUDA.
+  did finish took 17.8 and 25.7 s. Not seen on ROCm or CUDA. The aliased
+  router bias above is a candidate contributing factor; re-run after it.
 - **SYCL: a stale kernels library survives a candle bump.**
   `lfm2d/build.rs` rpaths the newest-named
   `target/<profile>/build/candle-sycl-kernels-*/out` that holds
