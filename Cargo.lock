@@ -282,7 +282,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "candle-core"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "byteorder",
  "candle-kernels",
@@ -317,7 +317,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "cudaforge",
 ]
@@ -325,7 +325,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "block2",
  "half",
@@ -340,7 +340,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "candle-core",
  "candle-metal-kernels",
@@ -358,7 +358,7 @@ dependencies = [
 [[package]]
 name = "candle-rocm-kernels"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "dirs",
  "fslock",
@@ -371,7 +371,7 @@ dependencies = [
 [[package]]
 name = "candle-sycl-kernels"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "half",
  "parking_lot",
@@ -380,7 +380,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -398,7 +398,7 @@ dependencies = [
 [[package]]
 name = "candle-ug"
 version = "0.11.0"
-source = "git+https://github.com/jgavinray/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
+source = "git+https://github.com/tobert/candle?rev=8135983bad16655731a0d7ca1a1263a5f335b94a#8135983bad16655731a0d7ca1a1263a5f335b94a"
 dependencies = [
  "ug",
  "ug-cuda",
