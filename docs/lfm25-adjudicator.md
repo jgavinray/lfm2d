@@ -868,6 +868,42 @@ First real numbers (2026-10-03, ROCm, `email-triage-v1`, two contexts that
 differ by two turns): the contexts split on `feeling` (spread 0.83, no
 agreement) and agreed on `verdict` (spread 0.20). One run, a smoke number.
 
+**The demo scenario, live (2026-10-03):** pooled verdicts matched the
+megakernel scenario's rules hint on 5/15 (cold) and 4-5/15 (describe-first),
+against 13/15 for Qwen3.8-Flash-Next on the same scenario. Each context votes
+by source, not by action: Memory and User ask on everything (even `cat`),
+Session allows everything (even `rm -rf`). The framing keys every option on
+"not clearly permitted *here*", so a context with nothing to say votes ask.
+
+**Option B, can a context abstain? Measured, failed its bar (2026-10-03).**
+Pre-registered in `benchmarks/lfm25/council/coverage-v1.json` (6b65cb0)
+before any read: a fresh scenario (3 tabs, 24 actions, gold coverage per
+cell), a spec that asks `this_source_covers: yes|no` before the verdict,
+and a bar of AUC >= 0.80 per context plus P(yes) < 0.5 on two thirds of each
+context's uncovered cells. Results in
+`benchmarks/lfm25/results/2026-10-03-council-coverage.json` (scorer:
+`examine/council_coverage.py`):
+
+| context | covered / uncovered | AUC | mean P(yes) covered / uncovered | uncovered < 0.5 |
+|---|---|---|---|---|
+| Memory | 9 / 13 | 0.77 | 0.74 / 0.53 | 7 of 13 |
+| User | 11 / 11 | 0.50 | 0.95 / 0.97 | 0 of 11 |
+| Session | 4 / 17 | 0.74 | 0.66 / 0.45 | 8 of 17 |
+
+Raw mass on the coverage slot was 99.6-99.9% everywhere: the model was asked
+and answered. User, which holds general guidance ("anything you can't undo"),
+says it covers everything, `npm run build` and `ls ~/.ssh` included
+(0.95-0.98). The two tabs with specific rules separate somewhat (0.74-0.77),
+short of the bar. Pooling verdicts with P(yes) as weights matched the hint on
+11/24, the same as the verdict-only baseline (which says ask on 23 of 24);
+asking the coverage question first moved the uniform pool to 8/24. Report was
+never the pooled verdict. Caveat on the gold: "anything you can't undo" does
+bear on a few cells marked uncovered (`crontab -r`, `git push`), but not on
+`ls`, `npm run build` or `psql --version`, which User also claims. So the
+coverage weight is not built into the daemon; a coverage question asked of a
+context reads like the verdict did, by source. Same family as
+`life-decision-v1`'s hedge on a described field.
+
 ## Probe and tokenize
 
 Ruled 2026-09-23, `docs/system1-split-plan.md` (git f9ca081) "Tokenize and probe
