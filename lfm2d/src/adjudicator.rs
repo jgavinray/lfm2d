@@ -550,6 +550,37 @@ pub trait Generator: Send + 'static {
         questions: &[crate::opinion_api::ResolvedQuestion],
         check: &dyn Fn() -> Result<(), Failure>,
     ) -> Result<crate::opinion_api::OpinionResponse, Failure>;
+    /// `/v1/opinion` with `contexts`: [`Generator::opine`] once per context,
+    /// serially in request order (never batched: a batched read is a
+    /// different computation on this engine, and the pool would blend that
+    /// in), then each question pooled. One job, one deadline, `check`
+    /// between and within the reads.
+    fn opine_contexts(
+        &mut self,
+        request: &crate::opinion_api::OpinionRequest,
+        questions: &[crate::opinion_api::ResolvedQuestion],
+        check: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<crate::opinion_api::OpinionMultiResponse, Failure> {
+        let ids = request
+            .contexts
+            .as_ref()
+            .ok_or_else(|| Failure::Internal("a multi-context read without contexts".into()))?;
+        let settings = request.pool.clone().unwrap_or_default();
+        let mut reads = Vec::with_capacity(ids.len());
+        for id in ids {
+            check()?;
+            reads.push(self.opine(&request.for_context(id), questions, check)?);
+        }
+        let pooled = crate::opinion_api::pool_reads(&reads, &settings).map_err(Failure::BadRequest)?;
+        Ok(crate::opinion_api::OpinionMultiResponse {
+            spec: request.spec.clone(),
+            contexts: ids.clone(),
+            reads,
+            pooled,
+            pool: settings,
+            queue_ms: 0.,
+        })
+    }
     /// Register a spec by its exact uploaded bytes: `id` is already the
     /// content hash of those bytes (computed once, centrally, by the
     /// handler — see `Handle::register`), `prompt` is them parsed. Already
@@ -4061,6 +4092,7 @@ impl Job {
 enum Reply {
     Adjudicate(AdjudicateResponse),
     Opinion(crate::opinion_api::OpinionResponse),
+    OpinionMulti(crate::opinion_api::OpinionMultiResponse),
     Register(RegisterOutcome),
     Unregister(UnregisterOutcome),
     Probe(crate::probe_api::ProbeResponse),
@@ -4198,6 +4230,23 @@ impl Worker {
                             "adjudication complete"
                         );
                         Reply::Adjudicate(r)
+                    }),
+                Job::Opinion(request, questions) if request.contexts.is_some() => check()
+                    .and_then(|()| generator.opine_contexts(request, questions, &check))
+                    .map(|mut r| {
+                        r.queue_ms = queue_ms;
+                        tracing::info!(
+                            spec = %r.spec,
+                            contexts = r.contexts.len(),
+                            field = %questions
+                                .iter()
+                                .map(|q| q.field.as_str())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            read_ms = r.reads.iter().map(|x| x.prefill_ms + x.describe_ms + x.read_ms).sum::<f64>(),
+                            "multi-context opinion read complete"
+                        );
+                        Reply::OpinionMulti(r)
                     }),
                 Job::Opinion(request, questions) => check()
                     .and_then(|()| generator.opine(request, questions, &check))
@@ -4649,6 +4698,44 @@ impl Handle {
             _ => Err(Failure::Internal("worker answered a context delete with something else".into()).into_response()),
         }
     }
+    /// `/v1/opinion` with `contexts`.
+    pub async fn opine_contexts(
+        &self,
+        request: crate::opinion_api::OpinionRequest,
+    ) -> Result<crate::opinion_api::OpinionMultiResponse, Response> {
+        request
+            .validate()
+            .map_err(|e| Failure::BadRequest(e).into_response())?;
+        if request.contexts.is_none() {
+            return Err(Failure::BadRequest("a multi-context read names its contexts".into()).into_response());
+        }
+        let questions = self.resolve_questions(&request)?;
+        match self.submit(Job::Opinion(request, questions), "opinion").await? {
+            Reply::OpinionMulti(r) => Ok(r),
+            _ => Err(
+                Failure::Internal("worker answered a multi-context opinion with something else".into())
+                    .into_response(),
+            ),
+        }
+    }
+    /// The handler's fast pre-check against this Handle's menu snapshot,
+    /// matching either id or name. Not authoritative (see the field doc on
+    /// `menu`): the worker re-resolves `request.spec` itself and is the one
+    /// that refuses an evicted or unknown spec.
+    #[allow(clippy::result_large_err)]
+    fn resolve_questions(
+        &self,
+        request: &crate::opinion_api::OpinionRequest,
+    ) -> Result<Vec<crate::opinion_api::ResolvedQuestion>, Response> {
+        let menu = self.menu.read().expect("menu lock poisoned");
+        let entry = menu
+            .iter()
+            .find(|e| e.id == request.spec || e.spec == request.spec)
+            .ok_or_else(|| unknown_spec(request.spec.as_str()).into_response())?;
+        entry
+            .resolve_all(&request.questions)
+            .map_err(|e| Failure::BadRequest(e).into_response())
+    }
     pub async fn opine(
         &self,
         request: crate::opinion_api::OpinionRequest,
@@ -4656,20 +4743,10 @@ impl Handle {
         request
             .validate()
             .map_err(|e| Failure::BadRequest(e).into_response())?;
-        // A fast pre-check against this Handle's menu snapshot, matching
-        // either id or name — not authoritative (see the field doc on
-        // `menu`): the worker re-resolves `request.spec` itself and is the
-        // one that actually refuses an evicted or unknown spec.
-        let questions = {
-            let menu = self.menu.read().expect("menu lock poisoned");
-            let entry = menu
-                .iter()
-                .find(|e| e.id == request.spec || e.spec == request.spec)
-                .ok_or_else(|| unknown_spec(request.spec.as_str()).into_response())?;
-            entry
-                .resolve_all(&request.questions)
-                .map_err(|e| Failure::BadRequest(e).into_response())?
-        };
+        if request.contexts.is_some() {
+            return Err(Failure::BadRequest("several contexts answer through opine_contexts".into()).into_response());
+        }
+        let questions = self.resolve_questions(&request)?;
         match self.submit(Job::Opinion(request, questions), "opinion").await? {
             Reply::Opinion(r) => Ok(r),
             _ => Err(
@@ -4805,8 +4882,12 @@ async fn adjudicate(
 async fn opine(
     State(h): State<Handle>,
     crate::server::ValidJson(request): crate::server::ValidJson<crate::opinion_api::OpinionRequest>,
-) -> Result<Json<crate::opinion_api::OpinionResponse>, Response> {
-    h.opine(request).await.map(Json)
+) -> Result<Response, Response> {
+    if request.contexts.is_some() {
+        h.opine_contexts(request).await.map(|r| Json(r).into_response())
+    } else {
+        h.opine(request).await.map(|r| Json(r).into_response())
+    }
 }
 #[allow(clippy::result_large_err)]
 async fn chat(
