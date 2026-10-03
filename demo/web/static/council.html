@@ -1,0 +1,699 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT. Ported from the megakernel council's council/static/council.html
+     (~/src/megakernel-qwen38-flashnext-strixhalo, MIT, 2026-10-03). council.py serves its state and events. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Council</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: dark;
+  --ground: #07080d; --panel: #0c0f17; --panel-2: #111522; --raise: #161b2b; --line: #222a3d; --line-2: #2e3854;
+  --ink: #eef1fa; --ink-2: #b4bccf; --ink-3: #8a93a8;
+  /* the options' colors, by position in the spec's enum: routine, ask, loudest */
+  --v0: #6cff5a; --v1: #ffc23d; --v2: #ff4560;
+  --hot: #f4f6ff;
+  --display: "Chakra Petch", "Rajdhani", ui-sans-serif, system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--ground); color: var(--ink); font: 15px/1.45 var(--sans); }
+body {
+  background-image: linear-gradient(rgba(34,228,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(34,228,255,.035) 1px, transparent 1px);
+  background-size: 48px 48px; overflow: hidden;
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button {
+  background: var(--raise); border: 1px solid var(--line-2); padding: 6px 12px; cursor: pointer;
+  font-family: var(--display); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; font-size: 13px;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+}
+button:hover:not(:disabled) { border-color: var(--hot); color: #fff; }
+button:disabled { opacity: .4; cursor: default; }
+button.hot { background: var(--hot); color: #05060a; border-color: var(--hot); }
+button.ghost { background: transparent; border-color: transparent; padding: 2px 6px; }
+button.ghost:hover:not(:disabled) { border-color: var(--line-2); }
+textarea, input[type=text] { background: #05060a; border: 1px solid var(--line-2); padding: 8px 10px; width: 100%; resize: vertical; }
+textarea:focus, input:focus { outline: 2px solid var(--hot); outline-offset: -1px; }
+.mono { font-family: var(--mono); }
+
+header { display: flex; align-items: center; gap: 14px; height: 60px; padding: 0 20px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #0b0e18, #07080d); }
+.brand { font-family: var(--display); font-weight: 700; font-size: 26px; letter-spacing: .24em; color: #fff;
+  text-shadow: -2px 0 rgba(34,228,255,.75), 2px 0 rgba(255,79,216,.75), 0 0 18px rgba(255,255,255,.25); }
+.tagline { color: var(--ink-2); font-size: 14px; }
+.tagline em { color: var(--ink); font-style: normal; }
+.spacer { flex: 1; }
+.badge { font: 600 12px var(--display); letter-spacing: .12em; text-transform: uppercase; padding: 3px 9px; border: 1px solid var(--line-2); color: var(--ink-2); white-space: nowrap; }
+.badge.synth { border-style: dashed; border-color: var(--ink-2); color: var(--ink); }
+#status { display: flex; align-items: center; gap: 8px; font: 13px var(--mono); color: var(--ink-2); min-width: 220px; }
+.led { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.led.idle { background: var(--v0); box-shadow: 0 0 8px var(--v0); }
+.led.busy { background: var(--v1); box-shadow: 0 0 8px var(--v1); animation: blink .8s infinite; }
+.led.failed { background: var(--v2); box-shadow: 0 0 8px var(--v2); }
+@keyframes blink { 50% { opacity: .35; } }
+
+main { display: grid; grid-template-columns: 600px 1fr; height: calc(100% - 60px); }
+@media (max-width: 1700px) { main { grid-template-columns: 460px 1fr; } .tagline { display: none; } }
+.panel-title { font: 600 13px var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--ink-3); }
+
+#left { display: grid; grid-template-columns: 170px minmax(0, 1fr); border-right: 1px solid var(--line); min-height: 0; min-width: 0; overflow: hidden; }
+@media (max-width: 1700px) { #left { grid-template-columns: 130px minmax(0, 1fr); } #chint { display: none; } }
+#rail { display: flex; flex-direction: column; gap: 8px; padding: 14px 10px; background: #090b12; border-right: 1px solid var(--line); overflow-y: auto; }
+.tabbtn { position: relative; text-align: left; padding: 10px 10px 10px 16px; background: var(--panel); border: 1px solid var(--line);
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%); text-transform: none; letter-spacing: 0; font-family: var(--sans); font-weight: 400; }
+.tabbtn::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--c); }
+.tabbtn.sel { background: var(--raise); border-color: var(--c); }
+.tabbtn.out { opacity: .5; }
+.tabbtn .nm { display: block; font: 700 16px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+.tabbtn .meta { display: block; font: 12px var(--mono); color: var(--ink-3); margin-top: 3px; }
+.tabbtn .inc { position: absolute; right: 10px; bottom: 10px; font: 600 11px var(--display); letter-spacing: .1em; color: var(--ink-3); }
+.tabbtn .inc.on { color: var(--c); }
+.tabbtn .spark { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c); margin-left: 6px; animation: blink .7s infinite; vertical-align: middle; }
+
+#tabview { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); }
+#tabhead { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); border-top: 3px solid var(--c, var(--line)); }
+#tabhead .row { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; }
+#tabname { overflow-wrap: anywhere; font: 700 22px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--c); cursor: text; }
+.switch { white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font: 600 12px var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); user-select: none; }
+.switch i { width: 34px; height: 18px; border: 1px solid var(--line-2); position: relative; background: #05060a; }
+.switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: var(--ink-3); transition: left .15s; }
+.switch.on i { border-color: var(--c); }
+.switch.on i::after { left: 18px; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.swatch { width: 20px; height: 20px; border: 2px solid #000; outline: 1px solid var(--line-2); background: var(--c); cursor: pointer; padding: 0; clip-path: none; }
+#preamble { margin-top: 8px; color: var(--ink-2); font-size: 14px; cursor: text; border-left: 2px solid var(--line-2); padding-left: 10px; }
+#ctxline { margin-top: 6px; font: 12px var(--mono); color: var(--ink-3); overflow-wrap: anywhere; }
+#msgs { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.msg { position: relative; padding: 9px 12px; background: #090c14; border: 1px solid var(--line); max-width: 96%; }
+.msg.user { border-left: 3px solid var(--c); }
+.msg.assistant { align-self: flex-end; background: #0f1220; border-right: 3px solid var(--ink-3); }
+.msg .who { font: 600 11px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2px; }
+.msg .txt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg .think { font-size: 13px; color: var(--ink-3); font-style: italic; white-space: pre-wrap; margin-bottom: 6px; max-height: 7.5em; overflow: auto; }
+.msg .tools { position: absolute; right: 4px; top: 2px; display: none; gap: 2px; }
+.msg:hover .tools { display: flex; }
+.msg .tools button { font-size: 11px; padding: 1px 6px; }
+.msg.live { border-style: dashed; border-color: var(--c); }
+#composer { border-top: 1px solid var(--line); padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 8px; background: #0a0d15; }
+#composer .row { display: flex; gap: 8px; align-items: center; }
+#composer .hint { color: var(--ink-3); font-size: 13px; flex: 1; }
+
+#right { display: grid; grid-template-rows: auto auto auto 1fr; min-height: 0; min-width: 0; }
+#bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); background: #090b12; flex-wrap: wrap; }
+#action { font: 16px var(--mono); padding: 10px 12px; flex: 1; min-width: 200px; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); }
+.seg button { clip-path: none; border: 0; background: transparent; color: var(--ink-3); padding: 6px 10px; font-size: 12px; }
+.seg button.on { background: var(--raise); color: var(--hot); box-shadow: inset 0 -2px 0 var(--hot); }
+.poolbox { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+.poolbox .panel-title { font-size: 10px; }
+#council { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--line); min-height: 52px; flex-wrap: wrap; }
+.member { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border: 1px solid var(--c); color: var(--c); font: 600 13px var(--display); letter-spacing: .1em; text-transform: uppercase; }
+.member.out { border-style: dashed; opacity: .45; }
+.member i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.arrow { color: var(--ink-3); font: 18px var(--mono); }
+.pooled-node { font: 600 13px var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--ink); padding: 4px 10px; border: 1px solid var(--line-2); background: var(--raise); }
+#tally { font: 12px var(--mono); color: var(--ink-2); }
+#banner { margin-left: auto; font: 14px var(--sans); color: var(--ink); padding: 5px 12px; border: 1px solid var(--c, var(--line-2)); display: none; }
+#banner b { color: var(--c); font-family: var(--display); letter-spacing: .08em; text-transform: uppercase; }
+
+#split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); min-height: 0; }
+#stream { overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; border-right: 1px solid var(--line); }
+#empty { color: var(--ink-3); padding: 40px 10px; text-align: center; font-size: 16px; }
+.card { display: grid; grid-template-columns: 96px 1fr auto; gap: 4px 14px; align-items: center; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; position: relative;
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%); }
+.card:hover { border-color: var(--line-2); background: var(--panel-2); }
+.card.sel { border-color: #fff; background: var(--panel-2); box-shadow: inset 4px 0 0 #fff; }
+.card.flipped { border-color: var(--fc); box-shadow: inset 0 0 0 1px var(--fc), 0 0 22px color-mix(in srgb, var(--fc) 30%, transparent); }
+.card.flash { animation: flash 1.6s ease-out 2; }
+@keyframes flash { 0% { background: color-mix(in srgb, var(--fc) 30%, var(--panel)); } 100% { background: var(--panel); } }
+/* The loudest option is an ask, louder (Amy, 2026-10-02): an alarm card, and an alert that stays up until acknowledged. */
+.card.alarm { border-color: var(--v2); animation: alarm 1.4s ease-in-out infinite; background: linear-gradient(90deg, color-mix(in srgb, var(--v2) 16%, var(--panel)), var(--panel) 70%); }
+@keyframes alarm { 0%, 100% { box-shadow: inset 0 0 0 1px var(--v2), 0 0 8px color-mix(in srgb, var(--v2) 35%, transparent); }
+  50% { box-shadow: inset 0 0 0 2px var(--v2), 0 0 26px color-mix(in srgb, var(--v2) 65%, transparent); } }
+.alarmline { grid-column: 2 / 4; font: 700 12px var(--display); letter-spacing: .12em; text-transform: uppercase; color: #ffd0d8; }
+#alert { display: none; align-items: center; gap: 12px; margin: 10px 18px 0; padding: 8px 10px 8px 14px; background: #1d0710; border: 2px solid var(--v2); color: #ffe3e8; font: 14px var(--sans); white-space: nowrap; min-width: 0;
+  animation: alarm 1.4s ease-in-out infinite; }
+#alert b { font: 700 16px var(--display); letter-spacing: .14em; color: var(--v2); text-transform: uppercase; }
+#alert .act-a { flex: 1 1 auto; font: 14px var(--mono); color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#alert button { flex: none; margin-left: auto; background: var(--v2); color: #05060a; border: 0; }
+@media (prefers-reduced-motion: reduce) { .card.alarm, #alert { animation: none; } }
+.chip { font: 700 15px var(--display); letter-spacing: .12em; text-transform: uppercase; text-align: center; padding: 6px 0; color: #05060a; background: var(--v); grid-row: span 2; }
+.chip.sm { font-size: 12px; padding: 2px 8px; display: inline-block; }
+.act { font: 15px var(--mono); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sub { display: flex; gap: 4px 12px; align-items: center; font: 12px var(--mono); color: var(--ink-3); min-width: 0; flex-wrap: wrap; }
+.sub > span { white-space: nowrap; }
+.lanes { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 22px; gap: 2px; grid-row: span 2; }
+.lane { height: 40px; display: flex; flex-direction: column-reverse; align-items: center; gap: 2px; padding: 3px 0; background: color-mix(in srgb, var(--v) 10%, transparent); border-bottom: 2px solid var(--v); }
+.lane i { width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); flex: none; }
+.agree { color: var(--ink-3); } .split { color: #fff; font-weight: 600; }
+.hintmiss { color: var(--v1); }
+.flipbadge { font: 600 12px var(--display); letter-spacing: .08em; text-transform: uppercase; padding: 1px 7px; border: 1px solid var(--fc); color: var(--fc); }
+.replay-ok { color: var(--v0); } .replay-bad { color: var(--v2); font-weight: 700; }
+.lowmass { color: var(--v1); font-weight: 600; }
+
+#detail { overflow-y: auto; overflow-x: hidden; padding: 16px 20px; min-width: 0; }
+#detail h2 { margin: 0 0 4px; font: 600 13px var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--ink-3); }
+#d-action { font: 16px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: #fff; margin: 4px 0 6px; }
+#d-meta { font-size: 13px; color: var(--ink-2); display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.dgrid { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 22px; margin-top: 12px; align-items: start; }
+@media (max-width: 1700px) { .dgrid { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
+svg.ternary { width: 100%; max-width: 340px; height: auto; display: block; }
+svg text { font-family: var(--display); }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-top: 4px; flex-wrap: wrap; }
+.bars { display: flex; flex-direction: column; gap: 9px; }
+.barrow { display: grid; grid-template-columns: 96px minmax(0, 1fr) 120px; gap: 10px; align-items: center; }
+.barrow .who { font: 700 13px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--c); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barrow.pool .who { color: #fff; }
+.bar { display: flex; height: 24px; background: #05060a; border: 1px solid var(--line); }
+.bar span { display: flex; align-items: center; justify-content: center; font: 600 12px var(--mono); color: #05060a; overflow: hidden; white-space: nowrap; }
+.mass { font: 12px var(--mono); color: var(--ink-3); text-align: right; white-space: nowrap; }
+.mass.low { color: var(--v1); }
+.desc { grid-column: 2 / 4; font-size: 13px; color: var(--ink-2); margin-top: -4px; }
+.desc b { font: 600 11px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin-right: 6px; }
+.loo { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.loorow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
+.loorow b { color: var(--c); font-family: var(--display); letter-spacing: .06em; text-transform: uppercase; }
+.loorow .pivot { font: 600 11px var(--display); letter-spacing: .12em; color: #fff; border: 1px solid #fff; padding: 0 5px; }
+.sect { margin-top: 18px; }
+.loonote { color: var(--ink-2); font-size: 14px; margin: 12px 0 0; max-width: 34em; }
+.hist { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
+.foot { display: flex; gap: 12px; align-items: center; margin-top: 16px; font: 13px var(--mono); color: var(--ink-2); flex-wrap: wrap; }
+#toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: #1a0a10; border: 1px solid var(--v2); color: #ffd0d8; padding: 10px 16px; display: none; z-index: 60; max-width: 70%; font-size: 14px; }
+#about { position: fixed; inset: 0; background: rgba(2,3,6,.78); display: none; align-items: center; justify-content: center; z-index: 70; }
+#about .box { width: min(760px, 92vw); max-height: 90vh; overflow: auto; background: var(--panel); border: 1px solid var(--hot); padding: 22px 26px; font-size: 15px; line-height: 1.55; }
+#about h3 { font: 700 18px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--hot); margin: 0 0 8px; }
+#about p { margin: 8px 0; color: var(--ink-2); }
+#about .trust { border-left: 3px solid var(--v1); padding-left: 12px; color: var(--ink); }
+
+/* a phone: one column, the page scrolls */
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  header { height: auto; flex-wrap: wrap; padding: 10px 16px; }
+  main, #left, #split { display: block; height: auto; }
+  #rail { flex-direction: row; overflow-x: auto; }
+  #msgs, #stream { max-height: 60vh; }
+  #status { min-width: 0; }
+  .barrow { grid-template-columns: 70px minmax(0, 1fr) 90px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">COUNCIL</div>
+  <div class="tagline">several held contexts judge each action · opinion reads on LFM2.5-8B-A1B</div>
+  <div class="spacer"></div>
+  <span class="badge synth" id="synth" title="the built-in scenario is synthetic">synthetic scenario</span>
+  <span class="badge mono" id="model">—</span>
+  <div id="status"><span class="led" id="led"></span><span id="stext">connecting…</span></div>
+  <button class="ghost" id="aboutbtn">about</button>
+</header>
+<main>
+  <section id="left">
+    <nav id="rail" aria-label="contexts"></nav>
+    <div id="tabview">
+      <div id="tabhead">
+        <div class="row">
+          <button class="swatch" id="swatch" title="change this context's color"></button>
+          <span id="tabname" title="click to rename"></span>
+          <span class="spacer"></span>
+          <span class="switch" id="incl" role="switch" tabindex="0"><i></i><span>in the council</span></span>
+          <button class="ghost" id="rmtab" title="remove this context">remove</button>
+        </div>
+        <div id="preamble" title="click to edit this context's role"></div>
+        <div id="ctxline"></div>
+      </div>
+      <div id="msgs"></div>
+      <div id="composer">
+        <textarea id="note" rows="3" placeholder="Add a note to this context, or ask its reviewer a question…"></textarea>
+        <div class="row">
+          <span class="hint" id="chint">ADD puts your words in the context. ASK has the model answer here (System 2); the reply joins the context.</span>
+          <button id="addmsg">add</button>
+          <button class="hot" id="askbtn">ask</button>
+          <button id="stopbtn" style="display:none">stop</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="right">
+    <div id="alert" role="alert" aria-live="assertive"></div>
+    <div id="bar">
+      <input type="text" id="action" placeholder="propose an agent action, e.g.  git push origin main" maxlength="2000" autocomplete="off">
+      <button class="hot" id="decide">decide</button>
+      <button id="play">▶ play scenario</button>
+      <div class="poolbox"><span class="panel-title">spec</span><span class="seg" id="specseg"></span></div>
+      <div class="poolbox"><span class="panel-title">pool</span><span class="seg" id="method"><button data-v="linear">linear</button><button data-v="loglinear">loglinear</button></span></div>
+      <div class="poolbox"><span class="panel-title">weights</span><span class="seg" id="weights"><button data-v="uniform">uniform</button><button data-v="mass">mass</button></span></div>
+    </div>
+    <div id="council"></div>
+    <div id="split">
+      <div id="stream"></div>
+      <div id="detail"></div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+<div id="about"><div class="box">
+  <h3>The council</h3>
+  <p>Each tab on the left is a <b>context</b>: a pinned, held context on the daemon (the repo's memory, Amy's standing guidance, the live session). An action typed on the right is <b>one</b> opinion read across every included context, in tab order: each context answers the spec's question on its own, after its own head.</p>
+  <p>The pooled verdict combines them: <b>linear</b> averages the probabilities (some context supports it), <b>loglinear</b> multiplies them (the contexts agree on it). <b>Mass</b> weights trust a context by how much of its probability landed on the options at all. The daemon never picks: the verdict here is the pool's top option, ties to the earlier one. The page recomputes the daemon's pool from the reads and stops loudly if the two differ.</p>
+  <p>Two specs: one reads the verdict <b>cold</b>, at the first slot; the other has each context <b>describe</b> the action first, so every description comes from inside its own context. Switching re-reads the recent decisions.</p>
+  <p>Change a context (edit, ask, include or exclude) and the last decisions are re-read under the new set: the cards whose verdict <b>flipped</b> light up in the color of the context that changed. Replay re-reads one: a repeated read is identical, so the bits match.</p>
+  <p>Ask runs a chat in that tab and the reply joins it. A chat never takes a reply back as text, so a tab's later asks continue the chat that wrote its replies, and a tab whose replies no chat holds any more (edited, restarted) can't be asked until the reply is deleted.</p>
+  <p id="about-scn"></p>
+  <p class="trust" id="about-trust"></p>
+  <p style="text-align:right"><button id="aboutclose">close</button></p>
+</div></div>
+<script>
+"use strict";
+window.__errs = [];
+addEventListener("error", (e) => window.__errs.push(String(e.message)));
+addEventListener("unhandledrejection", (e) => window.__errs.push(String(e.reason)));
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const SVGNS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const HEX = ["#6cff5a", "#ffc23d", "#ff4560"];
+const pct = (p) => (p * 100 >= 99.5 && p < 1 ? ">99" : p > 0 && p * 100 < 0.5 ? "<1" : Math.round(p * 100)) + "%";
+const API = "/council/api";
+
+let S = null;            // the snapshot, kept current by events
+let sel = null;          // the selected tab id
+let selDec = null;       // the selected decision id (null: follow the newest)
+const live = {};         // tab id -> the streamed text of an ask
+let lastBackfill = null;
+
+// Vocabulary: the options come from the daemon's spec menu (the snapshot), never from this page. They run from routine
+// to loudest; the last is the louder ask the page alarms on.
+const opts = () => S.options;
+const vidx = (v) => opts().indexOf(v);
+const loudest = () => opts()[opts().length - 1];
+const vhex = (v) => { const i = vidx(v), n = opts().length; return i < 0 ? "#8a93a8" : HEX[n < 2 ? 0 : Math.round(i * 2 / (n - 1))]; };
+
+function toast(m) { const t = $("toast"); t.textContent = m; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 8000); }
+async function api(path, body) {
+  const r = await fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  let j = {}; try { j = await r.json(); } catch (e) { /* an empty body */ }
+  if (!r.ok) { const m = (j.error && j.error.message) || `${path}: HTTP ${r.status}`; toast(m); throw new Error(m); }
+  return j;
+}
+const tabOf = (id) => S ? S.tabs.find((t) => t.id === id) : undefined;
+const colorOf = (id, fallback) => (tabOf(id) || {}).color || fallback || "#8a93a8";
+
+// `text` split as the daemon splits it: a reasoning region opening the turn, closed by the first </think>.
+function splitReasoning(text) {
+  const open = "<think>", close = "</think>";
+  if (!text.startsWith(open)) return [null, text];
+  const rest = text.slice(open.length), i = rest.indexOf(close);
+  return i < 0 ? [rest, ""] : [rest.slice(0, i), rest.slice(i + close.length)];
+}
+
+function status(st) {
+  const busy = !["idle", "failed"].includes(st.phase);
+  $("led").className = "led " + (st.phase === "failed" ? "failed" : busy ? "busy" : "idle");
+  $("stext").textContent = st.phase + (st.detail ? " · " + st.detail : "");
+}
+
+// ---------------- left: tabs ----------------
+function renderRail() {
+  const r = $("rail"); r.replaceChildren();
+  for (const t of S.tabs) {
+    const b = el("button", "tabbtn" + (t.id === sel ? " sel" : "") + (t.include ? "" : " out"));
+    b.style.setProperty("--c", t.color);
+    const nm = el("span", "nm", t.name);
+    if (live[t.id] !== undefined) nm.append(el("span", "spark"));
+    b.append(nm, el("span", "meta", `${t.messages.length} msg · ${t.n_tokens.toLocaleString()}t`), el("span", "inc" + (t.include ? " on" : ""), t.include ? "IN" : "OUT"));
+    b.onclick = () => { sel = t.id; renderRail(); renderTab(); };
+    r.append(b);
+  }
+  const add = el("button", "", "+ add context");
+  add.disabled = S.tabs.length >= S.max_tabs;
+  add.onclick = async () => {
+    const name = prompt("Name of the new context (e.g. Team, Incident, Repo B):");
+    if (!name) return;
+    const t = await api("/tabs", { name, preamble: "" }); sel = t.id; renderRail(); renderTab();
+  };
+  r.append(add);
+}
+
+function renderTab() {
+  const t = tabOf(sel), v = $("tabview");
+  if (!t) { v.style.visibility = "hidden"; return; }
+  v.style.visibility = "visible";
+  v.style.setProperty("--c", t.color); $("tabhead").style.setProperty("--c", t.color);
+  $("tabname").textContent = t.name;
+  $("preamble").textContent = t.preamble || "(no role text: click to add one)";
+  $("ctxline").textContent = `context ${t.context ? t.context.slice(0, 12) : "—"} · ${t.n_tokens.toLocaleString()} tokens pinned · prefilled in ${Math.round(t.pin_ms)} ms`
+    + (t.chat ? " · its replies' chat is held: an ask continues it" : "");
+  $("incl").className = "switch" + (t.include ? " on" : "");
+  $("swatch").style.setProperty("--c", t.color);
+  const m = $("msgs"); m.replaceChildren();
+  t.messages.forEach((msg, i) => m.append(messageEl(t, msg, i)));
+  if (live[t.id] !== undefined) {
+    const [think, answer] = splitReasoning(live[t.id]);
+    const L = el("div", "msg assistant live");
+    L.append(el("div", "who", "reviewer · " + (answer === null || (think !== null && !live[t.id].includes("</think>")) ? "thinking" : "answering")));
+    if (think) L.append(el("div", "think", think));
+    L.append(el("div", "txt", answer || "…"));
+    m.append(L);
+  }
+  m.scrollTop = m.scrollHeight;
+  const asking = Object.keys(live).length > 0;
+  $("askbtn").disabled = asking; $("addmsg").disabled = asking;
+  $("stopbtn").style.display = asking ? "" : "none";
+}
+
+function messageEl(t, msg, i) {
+  const d = el("div", "msg " + msg.role);
+  d.append(el("div", "who", msg.role === "user" ? (t.name === "Session" ? "amy · typed" : "note") : "reviewer"));
+  if (msg.thinking) d.append(el("div", "think", msg.thinking));
+  const txt = el("div", "txt", msg.content); d.append(txt);
+  const tools = el("div", "tools");
+  const ed = el("button", "ghost", "edit"), rm = el("button", "ghost", "×");
+  ed.onclick = (ev) => {
+    ev.stopPropagation();
+    const ta = el("textarea"); ta.value = msg.content; ta.rows = Math.min(10, msg.content.split("\n").length + 2);
+    const save = el("button", "hot", "save"), cancel = el("button", "", "cancel");
+    const row = el("div"); row.style.cssText = "display:flex;gap:6px;margin-top:6px;justify-content:flex-end"; row.append(cancel, save);
+    txt.replaceWith(ta); tools.remove(); d.append(row); ta.focus();
+    cancel.onclick = () => renderTab();
+    save.onclick = async () => { save.disabled = true; try { await api(`/tabs/${t.id}/messages/${i}`, { content: ta.value }); } catch (e) { save.disabled = false; } };
+  };
+  rm.onclick = (ev) => { ev.stopPropagation(); api(`/tabs/${t.id}/messages/${i}/remove`); };
+  tools.append(ed, rm); d.append(tools);
+  return d;
+}
+
+$("tabname").onclick = async () => { const t = tabOf(sel); if (!t) return; const name = prompt("Rename this context:", t.name); if (name && name !== t.name) await api(`/tabs/${t.id}`, { name }); };
+$("preamble").onclick = async () => { const t = tabOf(sel); if (!t) return; const p = prompt("This context's role (what kind of text it holds):", t.preamble); if (p !== null && p !== t.preamble) await api(`/tabs/${t.id}`, { preamble: p }); };
+$("incl").onclick = () => { const t = tabOf(sel); if (t) api(`/tabs/${t.id}`, { include: !t.include }); };
+$("incl").onkeydown = (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); $("incl").onclick(); } };
+$("swatch").onclick = () => { const t = tabOf(sel); if (!t) return; const k = S.palette.indexOf(t.color); api(`/tabs/${t.id}`, { color: S.palette[(k + 1) % S.palette.length] }); };
+$("rmtab").onclick = async () => { const t = tabOf(sel); if (!t) return; if (!confirm(`Remove the ${t.name} context? Its pinned context is freed.`)) return; await api(`/tabs/${t.id}/remove`); };
+$("addmsg").onclick = async () => { const text = $("note").value; if (!text.trim()) return; await api(`/tabs/${sel}/messages`, { role: "user", content: text }); $("note").value = ""; };
+$("askbtn").onclick = async () => {
+  const text = $("note").value; if (!text.trim()) return;
+  const tid = sel; await api(`/tabs/${tid}/ask`, { text }); $("note").value = "";
+  if (live[tid] === undefined) live[tid] = ""; renderRail(); renderTab();
+};
+$("stopbtn").onclick = () => api("/stop");
+
+const CAUSE = { edit: "edited", "add message": "note added", "delete message": "note deleted", ask: "answered", include: "joined",
+                exclude: "left", add: "added", remove: "removed", rename: "renamed", preamble: "role changed" };
+const specName = (f) => String(f || "").replace(/\.json$/, "");
+const causeWords = (c) => c.what === "pool" ? `→ ${c.pool ? c.pool.method + " · " + c.pool.weights : "new pool"}`
+  : c.what === "spec" ? `→ ${specName(c.spec)}` : (CAUSE[c.what] || c.what);
+const causeColor = (c) => c.what === "pool" || c.what === "spec" ? "#22e4ff" : colorOf(c.tab, c.color);
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+// ---------------- right: the council strip ----------------
+function renderCouncil() {
+  const c = $("council"); const banner = $("banner") || el("div"); banner.id = "banner";
+  c.replaceChildren();
+  const inc = S.tabs.filter((t) => t.include);
+  c.append(el("span", "panel-title", "the council"));
+  for (const t of S.tabs) { const m = el("span", "member" + (t.include ? "" : " out")); m.style.setProperty("--c", t.color); m.append(el("i"), document.createTextNode(t.name)); c.append(m); }
+  c.append(el("span", "arrow", "⟶"), el("span", "pooled-node", `${plural(inc.length, "context")} · ${specName(S.spec)} · ${S.pool.method} · ${S.pool.weights}`));
+  const hinted = S.decisions.filter((d) => d.rules);
+  if (hinted.length) {
+    const same = hinted.filter((d) => d.read.pooled.verdict === d.rules).length;
+    const t = el("span", "", `pooled = the rules hint on ${same} of ${hinted.length}`); t.id = "tally";
+    t.title = "the scenario's rules hint is the author's reading of the written rules: a hint, not gold"; c.append(t);
+  }
+  c.append(banner);
+  showBanner();
+}
+function showBanner() {
+  const b = $("banner"); if (!b) return;
+  if (!lastBackfill || Date.now() - lastBackfill.t > 15000) { b.style.display = "none"; return; }
+  const cause = lastBackfill.cause[lastBackfill.cause.length - 1] || {};
+  b.style.setProperty("--c", causeColor(cause)); b.replaceChildren();
+  b.append(el("b", "", cause.what === "pool" ? "pool" : cause.what === "spec" ? "spec" : cause.name), document.createTextNode(` ${causeWords(cause)} · `));
+  const n = lastBackfill.flips.length;
+  b.append(document.createTextNode(lastBackfill.reread ? `re-read ${lastBackfill.reread} · ` : cause.what === "pool" ? "re-pooled, no read · " : "nothing to re-read · "));
+  const f = el("b", "", `${n} flipped`); if (!n) f.style.color = "var(--ink-2)"; b.append(f);
+  b.style.display = "block";
+}
+setInterval(showBanner, 2000);
+
+// ---------------- right: the decision stream ----------------
+function renderStream() {
+  const s = $("stream"); s.replaceChildren();
+  if (!S.decisions.length) { const e = el("div"); e.id = "empty"; e.innerText = "Type an action above, or play the scenario.\nEach one is read by every included context."; s.append(e); renderAlert(); return; }
+  for (const d of [...S.decisions].reverse()) s.append(cardEl(d));
+  renderAlert();
+}
+
+// Every pooled loudest verdict not yet acknowledged keeps the alert up: it is an ask, louder, and an agent running on
+// its own would be halted until Amy answers (Amy, 2026-10-02).
+const acked = new Set();
+function renderAlert() {
+  const A = $("alert");
+  const open = S.decisions.filter((d) => d.read.pooled.verdict === loudest() && !acked.has(d.id));
+  if (!open.length) { A.style.display = "none"; A.replaceChildren(); return; }
+  const last = open[open.length - 1];
+  const act = el("span", "act-a"); act.textContent = last.action;
+  const btn = el("button", "", "acknowledge");
+  btn.onclick = () => { for (const d of open) acked.add(d.id); renderAlert(); };
+  A.replaceChildren(el("b", "", "⚠ " + loudest()), el("span", "", open.length > 1 ? `${open.length} open ·` : "an ask, louder ·"), act, el("span", "", "· an autonomous agent halts here"), btn);
+  A.style.display = "flex";
+}
+function currentSel() { return selDec && S.decisions.find((d) => d.id === selDec) || S.decisions[S.decisions.length - 1]; }
+
+function lanesEl(read) {
+  const lanes = el("div", "lanes");
+  for (const v of read.options) {
+    const lane = el("div", "lane"); lane.style.setProperty("--v", vhex(v)); lane.title = v;
+    for (const p of read.per) if (p.verdict === v) { const i = el("i"); i.style.setProperty("--c", colorOf(p.tab, p.color)); i.title = `${p.name}: ${v}`; lane.append(i); }
+    lanes.append(lane);
+  }
+  return lanes;
+}
+
+function cardEl(d) {
+  const r = d.read, v = r.pooled.verdict;
+  const c = el("div", "card" + (currentSel() && currentSel().id === d.id ? " sel" : ""));
+  if (d.flip) {
+    c.classList.add("flipped"); c.style.setProperty("--fc", causeColor(d.flip.cause || {}));
+    if (d._flash) { c.classList.add("flash"); d._flash = false; }
+  }
+  const chip = el("div", "chip", v); chip.style.setProperty("--v", vhex(v));
+  const act = el("div", "act", d.action); act.title = d.action;
+  const sub = el("div", "sub");
+  sub.append(el("span", r.pooled.agree ? "agree" : "split", r.pooled.agree ? "agree" : "◆ split"));
+  sub.append(el("span", "", `${r.per.length} ctx · ${Math.round(r.ms)} ms`));
+  const low = r.per.filter((p) => p.mass < S.min_mass);
+  if (low.length) sub.append(el("span", "lowmass", `⚠ mass ${low.map((p) => p.name).join(", ")}`));
+  if (d.rules && d.rules !== v) sub.append(el("span", "hintmiss", `hint: ${d.rules}`));
+  if (d.flip) { const f = el("span", "flipbadge", `${d.flip.from} → ${d.flip.to}`); f.style.setProperty("--fc", c.style.getPropertyValue("--fc")); sub.append(f); }
+  if (d.replay) sub.append(el("span", d.replay.match ? "replay-ok" : "replay-bad", d.replay.match ? "replay ✓" : "replay ✗"));
+  c.append(chip, act, lanesEl(r), sub);
+  if (v === loudest()) { c.classList.add("alarm"); c.append(el("div", "alarmline", "⚠ ask, louder · halts an autonomous agent")); }
+  c.onclick = () => { selDec = d.id; renderStream(); renderDetail(); };
+  return c;
+}
+
+// ---------------- right: the detail ----------------
+const TRI = [[30, 262], [170, 20], [310, 262]]; // option 0 bottom-left, option 1 top, option 2 bottom-right
+const at = (p) => [p[0] * TRI[0][0] + p[1] * TRI[1][0] + p[2] * TRI[2][0], p[0] * TRI[0][1] + p[1] * TRI[1][1] + p[2] * TRI[2][1]];
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+function star(cx, cy, r, attrs) {
+  const pts = [];
+  for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? r * .45 : r; pts.push(`${(cx + rr * Math.cos(a)).toFixed(1)},${(cy + rr * Math.sin(a)).toFixed(1)}`); }
+  return svgEl("polygon", { points: pts.join(" "), ...attrs });
+}
+
+function ternary(d) {
+  const r = d.read, names = r.options;
+  const svg = svgEl("svg", { viewBox: "0 0 340 300", class: "ternary", role: "img", "aria-label": "ternary plot of the contexts' reads" });
+  const ctr = [(TRI[0][0] + TRI[1][0] + TRI[2][0]) / 3, (TRI[0][1] + TRI[1][1] + TRI[2][1]) / 3];
+  const regions = [[TRI[0], mid(TRI[0], TRI[1]), ctr, mid(TRI[0], TRI[2])], [TRI[1], mid(TRI[1], TRI[2]), ctr, mid(TRI[0], TRI[1])], [TRI[2], mid(TRI[0], TRI[2]), ctr, mid(TRI[1], TRI[2])]];
+  for (let k = 0; k < 3; k++) svg.append(svgEl("polygon", { points: regions[k].map((p) => p.join(",")).join(" "), fill: vhex(names[k]), "fill-opacity": .07 }));
+  svg.append(svgEl("polygon", { points: TRI.map((p) => p.join(",")).join(" "), fill: "none", stroke: "#2e3854", "stroke-width": 1.5 }));
+  for (let k = 0; k < 3; k++) { const m = mid(TRI[k], TRI[(k + 1) % 3]); svg.append(svgEl("line", { x1: ctr[0], y1: ctr[1], x2: m[0], y2: m[1], stroke: "#222a3d", "stroke-dasharray": "3 4" })); }
+  const lab = (k, x, y, anchor) => { const t = svgEl("text", { x, y, "text-anchor": anchor, fill: vhex(names[k]), "font-size": 14, "font-weight": 700, "letter-spacing": "1.5" }); t.textContent = names[k].toUpperCase(); svg.append(t); };
+  lab(0, TRI[0][0] - 4, TRI[0][1] + 24, "start"); lab(1, TRI[1][0], TRI[1][1] - 6, "middle"); lab(2, TRI[2][0] + 4, TRI[2][1] + 24, "end");
+  const active = at(r.stars[r.pool.method]);
+  if (d.flip && d.history.length) {
+    const g = at(d.history[d.history.length - 1].pooled.probs);
+    svg.append(svgEl("line", { x1: g[0], y1: g[1], x2: active[0], y2: active[1], stroke: "#ffffff", "stroke-opacity": .5, "stroke-dasharray": "2 3" }));
+    svg.append(star(g[0], g[1], 9, { fill: "none", stroke: "#8a93a8", "stroke-width": 1.2 }));
+  }
+  const pts = r.per.map((p) => ({ p, xy: at(p.probs) }));
+  pts.forEach((a, i) => { let k = 0; for (let j = 0; j < i; j++) if (Math.hypot(pts[j].xy[0] - a.xy[0], pts[j].xy[1] - a.xy[1]) < 14) k++;
+    if (k) { const ang = Math.atan2(ctr[1] - a.xy[1], ctr[0] - a.xy[0]) + (k % 2 ? 1 : -1) * Math.floor(k / 2) * 0.75, dd = 15 * Math.ceil(k / 2) + (k > 1 ? 4 : 0);
+      a.xy = [a.xy[0] + dd * Math.cos(ang), a.xy[1] + dd * Math.sin(ang)]; } });
+  for (const a of pts) svg.append(svgEl("line", { x1: a.xy[0], y1: a.xy[1], x2: active[0], y2: active[1], stroke: colorOf(a.p.tab, a.p.color), "stroke-opacity": .35, "stroke-width": 1.2 }));
+  for (const a of pts) {
+    const col = colorOf(a.p.tab, a.p.color);
+    svg.append(svgEl("circle", { cx: a.xy[0], cy: a.xy[1], r: 11, fill: col, "fill-opacity": .18 }));
+    svg.append(svgEl("circle", { cx: a.xy[0], cy: a.xy[1], r: 6.5, fill: col, stroke: "#05060a", "stroke-width": 1.5 }));
+    const right = a.xy[0] < ctr[0];
+    const t = svgEl("text", { x: a.xy[0] + (right ? 12 : -12), y: a.xy[1] - 9, "text-anchor": right ? "start" : "end", fill: col, "font-size": 13, "font-weight": 700 }); t.textContent = a.p.name; svg.append(t);
+  }
+  const other = r.stars[r.pool.method === "linear" ? "loglinear" : "linear"];
+  if (other) { const o = at(other); svg.append(star(o[0], o[1], 10, { fill: "none", stroke: "#ffffff", "stroke-width": 1.5, "stroke-opacity": .8 })); }
+  svg.append(star(active[0], active[1], 13, { fill: vhex(r.pooled.verdict), stroke: "#05060a", "stroke-width": 1.5 }));
+  return svg;
+}
+
+function barEl(probs, names) {
+  const b = el("div", "bar");
+  probs.forEach((p, k) => { const s = el("span", "", p >= .12 ? pct(p) : ""); s.style.width = (p * 100).toFixed(2) + "%"; s.style.background = vhex(names[k]); s.title = `${names[k]} ${(p * 100).toFixed(1)}%`; b.append(s); });
+  return b;
+}
+
+function renderDetail() {
+  const D = $("detail"); D.replaceChildren();
+  const d = currentSel();
+  if (!d) { const p = el("p", "", "A decision's contexts, its pooled verdict and what each context contributes show here."); p.style.color = "var(--ink-3)"; D.append(el("h2", "", "detail"), p); return; }
+  const r = d.read, v = r.pooled.verdict, names = r.options;
+  const head = el("div"); head.style.cssText = "display:flex;gap:14px;align-items:center";
+  const chip = el("div", "chip", v); chip.style.setProperty("--v", vhex(v)); chip.style.cssText += ";padding:8px 18px;font-size:20px";
+  const ht = el("div"); ht.style.minWidth = "0"; ht.append(el("h2", "", `decision ${d.n} · ${d.source} · ${specName(r.spec)}`));
+  const act = el("div"); act.id = "d-action"; act.textContent = d.action; ht.append(act);
+  head.append(chip, ht); D.append(head);
+  if (v === loudest()) { const w = el("div", "alarmline", `⚠ ${v}: an ask, louder. Alert Amy; an agent running on its own stops here until she answers.`); w.style.cssText = "margin-top:8px;font-size:13px;color:#ffd0d8"; D.append(w); }
+  const meta = el("div"); meta.id = "d-meta";
+  meta.append(el("span", r.pooled.agree ? "agree" : "split", r.pooled.agree ? "the contexts agree" : `◆ the contexts split · spread ${pct(r.pooled.spread)}`));
+  if (d.rules) { const s = el("span", "", "the rules hint: "); const c2 = el("span", "chip sm", d.rules); c2.style.setProperty("--v", vhex(d.rules)); s.append(c2); meta.append(s); }
+  if (d.note) meta.append(el("span", "", d.note));
+  D.append(meta);
+  if (d.flip) {
+    const cause = d.flip.cause || {};
+    const who = cause.what === "pool" ? "pool " : cause.what === "spec" ? "spec " : cause.name + " ";
+    const f = el("div", "flipbadge", `flipped ${d.flip.from} → ${d.flip.to} · ${who}${causeWords(cause)}`);
+    f.style.setProperty("--fc", causeColor(cause)); f.style.cssText += ";display:inline-block;margin-top:8px;font-size:14px;padding:3px 10px"; D.append(f);
+  }
+  const g = el("div", "dgrid");
+  const left = el("div");
+  if (names.length === 3) {
+    left.append(el("h2", "", "where each context lands"), ternary(d));
+    const lg = el("div", "legend"); lg.append(el("span", "", `★ ${r.pool.method}: the verdict`), el("span", "", `☆ ${r.pool.method === "linear" ? "loglinear" : "linear"}`));
+    if (d.flip && d.history.length) lg.append(el("span", "", "☆ grey: before the flip"));
+    left.append(lg);
+  }
+  const right = el("div");
+  if (r.loo.length) {
+    right.append(el("h2", "", "leave one out"));
+    const lo = el("div", "loo");
+    r.loo.forEach((x, k) => {
+      const row = el("div", "loorow"); const name = el("b", "", r.per[k].name); name.style.setProperty("--c", colorOf(x.tab, r.per[k].color));
+      row.append(document.createTextNode("without"), name, el("span", "arrow", "→"));
+      if (x.verdict === null) row.append(el("span", "", "nothing left to pool"));
+      else { const c3 = el("span", "chip sm", x.verdict); c3.style.setProperty("--v", vhex(x.verdict)); row.append(c3); }
+      if (x.verdict !== v) row.append(el("span", "pivot", "PIVOTAL"));
+      lo.append(row);
+    });
+    right.append(lo);
+    const piv = r.loo.filter((x) => x.verdict !== v).length;
+    right.append(el("p", "loonote", piv ? `${piv} context${piv > 1 ? "s" : ""} decide${piv > 1 ? "" : "s"} this verdict: drop ${piv > 1 ? "either" : "it"} and the council says something else.`
+                                     : "No single context decides this: drop any one and the verdict holds."));
+  } else right.append(el("p", "loonote", "One context: nothing to leave out."));
+  g.append(left, right); D.append(g);
+  const sec = el("div", "sect"); sec.append(el("h2", "", `each context's read · ${names.join(" / ")} · raw mass on the options`));
+  const bars = el("div", "bars");
+  for (const p of r.per) {
+    const row = el("div", "barrow"); row.style.setProperty("--c", colorOf(p.tab, p.color));
+    const low = p.mass < S.min_mass;
+    const m = el("span", "mass" + (low ? " low" : ""), (low ? "⚠ " : "") + `mass ${pct(p.mass)}`);
+    m.title = low ? "low raw mass: this context put little probability on the options at all, so its odds are noise that looks like an answer" : "the options' share of the full vocabulary: was the question really put?";
+    row.append(el("span", "who", p.name), barEl(p.probs, names), m);
+    // the context's length and the weight it pooled with: a near-empty or zero-weight context shows here
+    const w = r.pooled.weights ? r.pooled.weights[r.per.indexOf(p)] : null;
+    const ctl = el("div", "desc" + (w === 0 ? " lowmass" : ""), [p.context_tokens != null ? `${p.context_tokens.toLocaleString()} tokens held` : null,
+      w != null ? `pooled at weight ${w === 0 ? "0: did not count" : w.toFixed(3)}` : null].filter(Boolean).join(" · "));
+    if (ctl.textContent) row.append(ctl);
+    for (const x of p.described || []) { const dd = el("div", "desc"); dd.append(el("b", "", x.field), document.createTextNode(typeof x.value === "string" ? x.value : JSON.stringify(x.value))); row.append(dd); }
+    bars.append(row);
+  }
+  const pr = el("div", "barrow pool"); pr.append(el("span", "who", "pooled"), barEl(r.pooled.probs, names), el("span", "mass", r.pool.method));
+  bars.append(pr); sec.append(bars); D.append(sec);
+  const foot = el("div", "foot");
+  const ctxms = r.per.map((p) => `${p.name} ${Math.round((p.ms.prefill_ms || 0) + (p.ms.describe_ms || 0) + (p.ms.read_ms || 0))}`).join(" · ");
+  foot.append(el("span", "", `${plural(r.per.length, "context")} · ${Math.round(r.ms)} ms · one read (${ctxms} ms)`));
+  const rb = el("button", "", "replay");
+  rb.onclick = async () => { rb.disabled = true; try { await api(`/decisions/${d.id}/replay`); } finally { rb.disabled = false; } };
+  foot.append(rb);
+  if (d.replay) foot.append(el("span", d.replay.match ? "replay-ok" : "replay-bad", d.replay.match ? `✓ same contexts, same bits (${Math.round(d.replay.ms)} ms)` : `✗ bits differ (${d.replay.diffs.join(", ")}): a bug`));
+  D.append(foot);
+  if (d.history.length) {
+    const s2 = el("div", "sect"); s2.append(el("h2", "", "earlier reads"));
+    const h = el("div", "hist");
+    for (const x of [...d.history].reverse()) {
+      const row = el("div"); const c4 = el("span", "chip sm", x.pooled.verdict); c4.style.setProperty("--v", vhex(x.pooled.verdict));
+      row.append(c4, document.createTextNode(`  ${specName(x.spec)} · ` + x.per.map((p) => `${p.name} ${p.verdict}`).join(" · ")));
+      h.append(row);
+    }
+    s2.append(h); D.append(s2);
+  }
+}
+
+// ---------------- pool, spec and actions ----------------
+function renderPool() {
+  for (const [id, key] of [["method", "method"], ["weights", "weights"]]) for (const b of $(id).children) b.className = b.dataset.v === S.pool[key] ? "on" : "";
+  const seg = $("specseg"); seg.replaceChildren();
+  for (const s of S.specs) {
+    const b = el("button", s.file === S.spec ? "on" : "", s.describe.length ? "describe first" : "cold");
+    b.title = `${specName(s.file)}: ${s.describe.length ? "writes " + s.describe.join(", ") + " inside each context, then reads " + s.field : "reads " + s.field + " at the first slot"}`;
+    b.onclick = () => api("/spec", { spec: s.file });
+    seg.append(b);
+  }
+}
+for (const id of ["method", "weights"]) for (const b of $(id).children) b.onclick = () => api("/pool", { [id]: b.dataset.v });
+$("decide").onclick = async () => {
+  const a = $("action").value; if (!a.trim()) return;
+  $("decide").disabled = true;
+  try { await api("/decide", { action: a }); $("action").value = ""; selDec = null; } finally { $("decide").disabled = false; }
+};
+$("action").onkeydown = (e) => { if (e.key === "Enter") $("decide").onclick(); };
+$("play").onclick = () => { selDec = null; api("/scenario"); };
+$("aboutbtn").onclick = () => { $("about").style.display = "flex"; };
+$("aboutclose").onclick = () => { $("about").style.display = "none"; };
+
+function renderAll() {
+  if (!sel || !tabOf(sel)) sel = S.tabs.length ? S.tabs[0].id : null;
+  status(S.status); renderRail(); renderTab(); renderCouncil(); renderPool(); renderStream(); renderDetail();
+  $("model").textContent = S.model ? `${S.model.model_id || "?"} · ${S.model.backend || "?"}` : "—";
+  $("synth").style.display = S.synthetic ? "" : "none";
+  $("about-scn").textContent = S.about; $("about-trust").textContent = "Trust: " + S.trust;
+}
+function upsertDecision(d) {
+  const k = S.decisions.findIndex((x) => x.id === d.id);
+  if (k >= 0) S.decisions[k] = d; else S.decisions.push(d);
+  if (S.decisions.length > S.max_decisions) S.decisions.splice(0, S.decisions.length - S.max_decisions);
+}
+function onEvent(e) {
+  switch (e.type) {
+    case "hello": case "reset": S = e; for (const k in live) delete live[k]; if (e.type === "reset") { lastBackfill = null; selDec = null; } renderAll(); break;
+    case "status": if (!S) break; S.status = e; status(e); break;
+    case "tab": { const k = S.tabs.findIndex((t) => t.id === e.tab.id); if (k >= 0) S.tabs[k] = e.tab; else S.tabs.push(e.tab);
+      if (!sel) sel = e.tab.id; renderRail(); if (e.tab.id === sel) renderTab(); renderCouncil(); break; }
+    case "tab_removed": delete live[e.id]; S.tabs = S.tabs.filter((t) => t.id !== e.id); if (sel === e.id) sel = S.tabs.length ? S.tabs[0].id : null; renderAll(); break;
+    case "token": { const first = live[e.tab] === undefined; live[e.tab] = (live[e.tab] || "") + e.piece; if (e.tab === sel) renderTab(); else if (first) renderRail(); break; }
+    case "ask_done": case "aborted": delete live[e.tab]; renderRail(); renderTab(); if (e.type === "aborted") toast(`ask stopped: ${e.reason}`); break;
+    case "decision": upsertDecision(e.decision); renderCouncil(); renderStream(); renderDetail(); break;
+    case "spec": S.spec = e.spec; renderPool(); renderCouncil(); break;
+    case "backfill":
+      for (const d of e.decisions) { if (e.flips.some((f) => f.id === d.id)) d._flash = true; upsertDecision(d); }
+      if (e.pool) S.pool = e.pool;
+      lastBackfill = { cause: e.cause, flips: e.flips, reread: e.reread, t: Date.now() };
+      if (e.note) toast(e.note);
+      renderPool(); renderCouncil(); renderStream(); renderDetail(); break;
+    case "replay": { const d = S.decisions.find((x) => x.id === e.id); if (d) d.replay = { match: e.match, diffs: e.diffs, ms: e.ms }; renderStream(); renderDetail(); break; }
+    case "error": toast(`${e.job}: ${e.message}`); break;
+    case "repinned": toast(e.message); break;
+  }
+}
+function connect() {
+  const es = new EventSource(API + "/events");
+  es.onmessage = (m) => onEvent(JSON.parse(m.data));
+  es.onerror = () => { $("stext").textContent = "disconnected, retrying…"; $("led").className = "led failed"; };
+}
+connect();
+</script>
+</body>
+</html>

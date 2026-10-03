@@ -443,6 +443,9 @@ pub enum Failure {
     /// A boot-time spec cannot be deleted — `DELETE /v1/opinion/specs/{id}`
     /// against an `--opinion-spec`.
     Forbidden(String),
+    /// A held state that cannot be held: pins past half the checkpoint
+    /// budget, or an entry that does not fit beside the pins (`507`).
+    InsufficientStorage(String),
     Internal(String),
     Cancelled,
     Deadline,
@@ -462,6 +465,7 @@ impl Failure {
             Self::NotFound(s) => (StatusCode::NOT_FOUND, "not_found", s),
             Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, "unprocessable", s),
             Self::Forbidden(s) => (StatusCode::FORBIDDEN, "forbidden", s),
+            Self::InsufficientStorage(s) => (StatusCode::INSUFFICIENT_STORAGE, "insufficient_storage", s),
             Self::Internal(s) => (StatusCode::INTERNAL_SERVER_ERROR, "internal", s),
             Self::Cancelled => (
                 StatusCode::REQUEST_TIMEOUT,
@@ -546,6 +550,37 @@ pub trait Generator: Send + 'static {
         questions: &[crate::opinion_api::ResolvedQuestion],
         check: &dyn Fn() -> Result<(), Failure>,
     ) -> Result<crate::opinion_api::OpinionResponse, Failure>;
+    /// `/v1/opinion` with `contexts`: [`Generator::opine`] once per context,
+    /// serially in request order (never batched: a batched read is a
+    /// different computation on this engine, and the pool would blend that
+    /// in), then each question pooled. One job, one deadline, `check`
+    /// between and within the reads.
+    fn opine_contexts(
+        &mut self,
+        request: &crate::opinion_api::OpinionRequest,
+        questions: &[crate::opinion_api::ResolvedQuestion],
+        check: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<crate::opinion_api::OpinionMultiResponse, Failure> {
+        let ids = request
+            .contexts
+            .as_ref()
+            .ok_or_else(|| Failure::Internal("a multi-context read without contexts".into()))?;
+        let settings = request.pool.clone().unwrap_or_default();
+        let mut reads = Vec::with_capacity(ids.len());
+        for id in ids {
+            check()?;
+            reads.push(self.opine(&request.for_context(id), questions, check)?);
+        }
+        let pooled = crate::opinion_api::pool_reads(&reads, &settings).map_err(Failure::BadRequest)?;
+        Ok(crate::opinion_api::OpinionMultiResponse {
+            spec: request.spec.clone(),
+            contexts: ids.clone(),
+            reads,
+            pooled,
+            pool: settings,
+            queue_ms: 0.,
+        })
+    }
     /// Register a spec by its exact uploaded bytes: `id` is already the
     /// content hash of those bytes (computed once, centrally, by the
     /// handler — see `Handle::register`), `prompt` is them parsed. Already
@@ -580,6 +615,28 @@ pub trait Generator: Send + 'static {
     ) -> Result<crate::chat_session::ChatResponse, Failure> {
         let _ = (request, events, at);
         Err(Failure::Internal("this generator does not chat".into()))
+    }
+    /// `POST /v1/contexts`: build (or find) a held context and apply its
+    /// pin. Prefills like a chat turn, pausing at the same points (the
+    /// [`YieldPoint`] rule holds). Only the real engine holds contexts.
+    fn context_create(
+        &mut self,
+        request: &crate::contexts_api::ContextRequest,
+        at: &dyn YieldPoint<Self>,
+    ) -> Result<crate::contexts_api::ContextCreated, Failure> {
+        let _ = (request, at);
+        Err(Failure::Internal("this generator does not hold contexts".into()))
+    }
+    /// `GET /v1/contexts/{id}`; a `404` when nothing is held under `id`.
+    fn context_info(&mut self, id: &str) -> Result<crate::contexts_api::ContextInfo, Failure> {
+        let _ = id;
+        Err(Failure::Internal("this generator does not hold contexts".into()))
+    }
+    /// `DELETE /v1/contexts/{id}`, pinned or not; a `404` when nothing is
+    /// held under `id`.
+    fn context_delete(&mut self, id: &str) -> Result<crate::contexts_api::ContextDeleted, Failure> {
+        let _ = id;
+        Err(Failure::Internal("this generator does not hold contexts".into()))
     }
     /// One task of the generator's own background work, run by the worker
     /// only when every queue is empty; `false` when there is none. It
@@ -1568,6 +1625,7 @@ mod failure_wire_tests {
             (Failure::NotFound("x".into()), 404, "not_found"),
             (Failure::Forbidden("x".into()), 403, "forbidden"),
             (Failure::Unprocessable("x".into()), 422, "unprocessable"),
+            (Failure::InsufficientStorage("x".into()), 507, "insufficient_storage"),
             (Failure::Cancelled, 408, "cancelled"),
             (Failure::Deadline, 504, "deadline"),
             (Failure::Internal("x".into()), 500, "internal"),
@@ -2388,6 +2446,42 @@ impl Generator for Adjudicator {
         self.chat_turn(request, events, at)
     }
 
+    fn context_create(
+        &mut self,
+        request: &crate::contexts_api::ContextRequest,
+        at: &dyn YieldPoint<Self>,
+    ) -> Result<crate::contexts_api::ContextCreated, Failure> {
+        request.validate().map_err(Failure::BadRequest)?;
+        self.build_context(request, at)
+    }
+
+    fn context_info(&mut self, id: &str) -> Result<crate::contexts_api::ContextInfo, Failure> {
+        let held = self
+            .chats
+            .peek(id)
+            .filter(|h| h.kind == crate::chat_session::CheckpointKind::Context)
+            .ok_or_else(|| unknown_context(id))?;
+        Ok(crate::contexts_api::ContextInfo {
+            id: id.to_owned(),
+            n_tokens: held.ids.len(),
+            pinned: self.chats.is_pinned(id).unwrap_or(false),
+            bytes: self.chats.bytes_of(id).unwrap_or(0),
+        })
+    }
+
+    fn context_delete(&mut self, id: &str) -> Result<crate::contexts_api::ContextDeleted, Failure> {
+        // Contexts only: a chat checkpoint's id is not a context's.
+        if self.chats.peek(id).is_none_or(|h| h.kind != crate::chat_session::CheckpointKind::Context) {
+            return Err(unknown_context(id));
+        }
+        self.chats.remove(id);
+        // What a deleted checkpoint leaves, as for an evicted one: its tail
+        // prefixes and its queued prefills.
+        self.states.forget_checkpoint(id);
+        self.background.retain(|(checkpoint, _)| checkpoint != id);
+        Ok(crate::contexts_api::ContextDeleted { id: id.to_owned(), deleted: true })
+    }
+
     /// Background tail prefill: for each checkpoint a turn published, the
     /// head of every spec its chat was tail-read with, forwarded once so a
     /// later read of that spec starts after it. A read forwards the same
@@ -2426,6 +2520,27 @@ fn tail_head(spec: &LoadedSpec) -> Result<(&str, String), Failure> {
 /// The checkpoint a tail read names; only called on a tail read.
 fn checkpoint_id_of(request: &crate::opinion_api::OpinionRequest) -> &str {
     &request.context.as_ref().expect("a tail read names a checkpoint").checkpoint
+}
+
+/// A context id naming nothing held: evicted, deleted, lost to a restart, or
+/// never made here. The caller builds it again from its content (`POST
+/// /v1/contexts`), which gives the same id back.
+fn unknown_context(id: &str) -> Failure {
+    Failure::NotFound(format!(
+        "no held context {id:?}: it was deleted, evicted (least recently used, under \
+         --chat-checkpoint-budget-mib), lost to a restart, or never made by this daemon; \
+         build it again from its content"
+    ))
+}
+
+/// A read's context naming nothing held: a chat checkpoint or a held context
+/// (the daemon cannot tell which an unknown id was), each with its remedy.
+fn unknown_read_context(id: &str) -> Failure {
+    Failure::NotFound(format!(
+        "no chat checkpoint or held context {id:?}: it was evicted (least recently used, under \
+         --chat-checkpoint-budget-mib), deleted, lost to a restart, or never made by this daemon; \
+         start the chat again, or build the context again from its content"
+    ))
 }
 
 /// A checkpoint id naming nothing held: evicted, or never made here. Never a
@@ -2497,7 +2612,7 @@ impl Adjudicator {
             + checkpoint.ids.len() * std::mem::size_of::<u32>()
             + checkpoint.text.len();
         let specs = checkpoint.read_specs.lock().expect("read_specs lock").clone();
-        let evicted = self.chats.insert(id.clone(), bytes, checkpoint).map_err(Failure::Internal)?;
+        let evicted = self.chats.insert(id.clone(), bytes, checkpoint).map_err(Failure::InsufficientStorage)?;
         // What an evicted checkpoint leaves: its tail prefixes (unreachable
         // now: a read of it is a 404 first) and its queued prefills.
         for gone in &evicted {
@@ -2522,6 +2637,105 @@ impl Adjudicator {
         Ok(())
     }
 
+    /// Build (or find) a held context: see [`crate::contexts_api`]. Each turn
+    /// is rendered and encoded alone, as in a chat turn, and the build
+    /// forwards from the longest held prefix ending at a turn, which under
+    /// the canonical schedule is the state a whole build gives.
+    fn build_context(
+        &mut self,
+        request: &crate::contexts_api::ContextRequest,
+        at: &dyn YieldPoint<Self>,
+    ) -> Result<crate::contexts_api::ContextCreated, Failure> {
+        use crate::chat_session::{ChatCheckpoint, CheckpointKind, context_id};
+        at.check()?;
+        let begin = Instant::now();
+        let mut texts = Vec::with_capacity(request.messages.len() + 1);
+        texts.push(
+            crate::chat::render_head(
+                request.system.as_deref().unwrap_or(""),
+                request.tools.as_deref().unwrap_or(&[]),
+            )
+            .map_err(Failure::BadRequest)?,
+        );
+        for message in &request.messages {
+            texts.push(message.render().map_err(Failure::BadRequest)?);
+        }
+        let segments: Vec<Vec<u32>> = texts
+            .iter()
+            .map(|t| encode_ids(&self.tokenizer, t).map_err(Failure::Internal))
+            .collect::<Result<_, _>>()?;
+        let ids: Vec<u32> = segments.concat();
+        let text: String = texts.concat();
+        if ids.len() >= self.context_limit {
+            return Err(Failure::BadRequest(format!(
+                "the context is {} tokens; the adjudicator holds at most {} and a read needs room after it",
+                ids.len(),
+                self.context_limit
+            )));
+        }
+        let id = context_id(&ids);
+        let fresh = self.chats.get(&id).is_none();
+        let cached_tokens = if !fresh {
+            ids.len()
+        } else {
+            // The longest held context that is a prefix ending at a turn,
+            // short of the whole. Only contexts: a chat checkpoint of the
+            // same ids may hold decoded tokens, another computation.
+            let mut base = None;
+            let mut covered = 0;
+            for k in (1..segments.len()).rev() {
+                let end: usize = segments[..k].iter().map(Vec::len).sum();
+                if let Some(held) = self.chats.peek(&context_id(&ids[..end])) {
+                    base = Some(held.clone());
+                    covered = k;
+                    break;
+                }
+            }
+            let (mut state, cached, inherited) = match &base {
+                Some(b) => (
+                    b.state.clone(),
+                    b.ids.len(),
+                    b.read_specs.lock().expect("read_specs lock").clone(),
+                ),
+                None => (self.model.new_state(), 0, Default::default()),
+            };
+            drop(base);
+            let model = self.model.clone();
+            let refs: Vec<&[u32]> = segments[covered..].iter().map(Vec::as_slice).collect();
+            let logits = forward_segments(&model, &mut state, &refs, &mut || at.pause(self))?;
+            logits.device().synchronize()?;
+            at.check()?;
+            let held = Arc::new(ChatCheckpoint {
+                kind: CheckpointKind::Context,
+                ids: ids.clone(),
+                text,
+                state,
+                read_specs: std::sync::Mutex::new(inherited),
+            });
+            self.hold_checkpoint(id.clone(), held)?;
+            cached
+        };
+        if let Some(pin) = request.pin
+            && let Err(e) = self.chats.set_pinned(&id, pin)
+        {
+            // A refusal changes nothing: a context this request built goes.
+            if fresh {
+                self.chats.remove(&id);
+                self.states.forget_checkpoint(&id);
+                self.background.retain(|(checkpoint, _)| *checkpoint != id);
+            }
+            return Err(Failure::InsufficientStorage(e));
+        }
+        Ok(crate::contexts_api::ContextCreated {
+            n_tokens: ids.len(),
+            cached_tokens,
+            prefill_ms: begin.elapsed().as_secs_f64() * 1000.,
+            pinned: self.chats.is_pinned(&id).unwrap_or(false),
+            bytes: self.chats.bytes_of(&id).unwrap_or(0),
+            id,
+        })
+    }
+
     /// One chat turn: see `crate::chat_session` for the checkpoints and the
     /// canonical schedule this keeps. Like `generate`, no borrow of `self`
     /// is held across a pause: the base checkpoint is an `Arc` clone, every
@@ -2539,7 +2753,10 @@ impl Adjudicator {
             Some(id) => {
                 let held = self.chats.get(id).ok_or_else(|| unknown_checkpoint(id))?;
                 if held.kind != CheckpointKind::ChatTurn {
-                    return Err(Failure::BadRequest(format!("checkpoint {id} does not end at a chat turn")));
+                    return Err(Failure::BadRequest(format!(
+                        "{id} is a held context, not a chat: a chat continues only from a checkpoint \
+                         /v1/chat returned (a context may hold assistant turns this daemon never generated)"
+                    )));
                 }
                 Some(held)
             }
@@ -2879,19 +3096,15 @@ impl Adjudicator {
                         request.spec
                     )));
                 }
+                // A chat checkpoint or a held context: both end at a turn.
                 let held = self
                     .chats
                     .get(&context.checkpoint)
-                    .ok_or_else(|| unknown_checkpoint(&context.checkpoint))?;
-                if held.kind != crate::chat_session::CheckpointKind::ChatTurn {
-                    return Err(Failure::BadRequest(format!(
-                        "checkpoint {} does not end at a chat turn",
-                        context.checkpoint
-                    )));
-                }
+                    .ok_or_else(|| unknown_read_context(&context.checkpoint))?;
                 Some(held)
             }
         };
+        let context_tokens = tail.as_ref().map(|held| held.ids.len());
         // The prompt as text (what `rendered_sha256` covers), as ids, the
         // text option stability is checked against (it starts at a control
         // token, so the rest of the prompt cannot change its tokens), and a
@@ -3177,6 +3390,7 @@ impl Adjudicator {
             prefix: spec.info.clone(),
             spec: request.spec.clone(),
             context: request.context.clone(),
+            context_tokens,
             described,
             answers,
             rendered: request.rendered.then(|| format!("{prompt_text}{last_text}")),
@@ -3855,6 +4069,9 @@ enum Job {
         crate::chat_session::ChatRequest,
         Option<tokio::sync::mpsc::UnboundedSender<crate::chat_session::ChatEvent>>,
     ),
+    ContextCreate(crate::contexts_api::ContextRequest),
+    ContextInfo(String),
+    ContextDelete(String),
 }
 impl Job {
     fn timeout_ms(&self) -> u64 {
@@ -3864,16 +4081,24 @@ impl Job {
             Job::Register(..) | Job::Unregister(_) => SPEC_ADMIN_TIMEOUT_MS,
             Job::Probe(r) => r.timeout_ms,
             Job::Chat(r, _) => r.timeout_ms,
+            Job::ContextCreate(r) => r.timeout_ms,
+            Job::ContextInfo(_) | Job::ContextDelete(_) => SPEC_ADMIN_TIMEOUT_MS,
         }
     }
     /// Which queue this job waits in: see [`Priority`].
     fn priority(&self) -> Priority {
         match self {
             Job::Adjudicate(r) if r.opinion => Priority::Interactive,
-            Job::Opinion(..) | Job::Probe(_) => Priority::Interactive,
-            Job::Adjudicate(_) | Job::Chat(..) | Job::Register(..) | Job::Unregister(_) => {
-                Priority::Generative
-            }
+            // Looking a context up removes nothing, so it may be served at a
+            // pause; building one prefills (it pauses) and deleting one removes
+            // what a paused job might publish beside, so both wait their turn.
+            Job::Opinion(..) | Job::Probe(_) | Job::ContextInfo(_) => Priority::Interactive,
+            Job::Adjudicate(_)
+            | Job::Chat(..)
+            | Job::Register(..)
+            | Job::Unregister(_)
+            | Job::ContextCreate(_)
+            | Job::ContextDelete(_) => Priority::Generative,
         }
     }
     fn operation(&self) -> &'static str {
@@ -3884,16 +4109,23 @@ impl Job {
             Job::Unregister(_) => "unregister",
             Job::Probe(_) => "probe",
             Job::Chat(..) => "chat",
+            Job::ContextCreate(_) => "context_create",
+            Job::ContextInfo(_) => "context_info",
+            Job::ContextDelete(_) => "context_delete",
         }
     }
 }
 enum Reply {
     Adjudicate(AdjudicateResponse),
     Opinion(crate::opinion_api::OpinionResponse),
+    OpinionMulti(crate::opinion_api::OpinionMultiResponse),
     Register(RegisterOutcome),
     Unregister(UnregisterOutcome),
     Probe(crate::probe_api::ProbeResponse),
     Chat(crate::chat_session::ChatResponse),
+    ContextCreated(crate::contexts_api::ContextCreated),
+    ContextInfo(crate::contexts_api::ContextInfo),
+    ContextDeleted(crate::contexts_api::ContextDeleted),
 }
 struct Work {
     job: Job,
@@ -4025,6 +4257,23 @@ impl Worker {
                         );
                         Reply::Adjudicate(r)
                     }),
+                Job::Opinion(request, questions) if request.contexts.is_some() => check()
+                    .and_then(|()| generator.opine_contexts(request, questions, &check))
+                    .map(|mut r| {
+                        r.queue_ms = queue_ms;
+                        tracing::info!(
+                            spec = %r.spec,
+                            contexts = r.contexts.len(),
+                            field = %questions
+                                .iter()
+                                .map(|q| q.field.as_str())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            read_ms = r.reads.iter().map(|x| x.prefill_ms + x.describe_ms + x.read_ms).sum::<f64>(),
+                            "multi-context opinion read complete"
+                        );
+                        Reply::OpinionMulti(r)
+                    }),
                 Job::Opinion(request, questions) => check()
                     .and_then(|()| generator.opine(request, questions, &check))
                     .map(|mut r| {
@@ -4149,6 +4398,22 @@ impl Worker {
                             Reply::Chat(r)
                         })
                 }
+                Job::ContextCreate(request) => check()
+                    .and_then(|()| generator.context_create(request, &pause))
+                    .map(|r| {
+                        tracing::info!(
+                            n_tokens = r.n_tokens,
+                            cached_tokens = r.cached_tokens,
+                            prefill_ms = r.prefill_ms,
+                            pinned = r.pinned,
+                            "context held"
+                        );
+                        Reply::ContextCreated(r)
+                    }),
+                Job::ContextInfo(id) => check().and_then(|()| generator.context_info(id)).map(Reply::ContextInfo),
+                Job::ContextDelete(id) => check()
+                    .and_then(|()| generator.context_delete(id))
+                    .map(Reply::ContextDeleted),
             };
             if let Err(e) = &result {
                 let kind = match e {
@@ -4156,6 +4421,7 @@ impl Worker {
                     Failure::NotFound(_) => "not_found",
                     Failure::Unprocessable(_) => "unprocessable",
                     Failure::Forbidden(_) => "forbidden",
+                    Failure::InsufficientStorage(_) => "insufficient_storage",
                     Failure::Internal(_) => "internal",
                     Failure::Cancelled => "cancelled",
                     Failure::Deadline => "deadline",
@@ -4425,6 +4691,77 @@ impl Handle {
     /// Validate against the menu here, so a question the daemon cannot ask
     /// is a 400 that never occupies the worker.
     #[allow(clippy::result_large_err)]
+    /// `POST /v1/contexts`.
+    pub async fn context_create(
+        &self,
+        request: crate::contexts_api::ContextRequest,
+    ) -> Result<crate::contexts_api::ContextCreated, Response> {
+        request.validate().map_err(|e| Failure::BadRequest(e).into_response())?;
+        match self.submit(Job::ContextCreate(request), "context_create").await? {
+            Reply::ContextCreated(r) => Ok(r),
+            _ => Err(Failure::Internal("worker answered a context build with something else".into()).into_response()),
+        }
+    }
+    /// `GET /v1/contexts/{id}`. An id that could name nothing (not 64
+    /// lowercase hex digits) is a `404` like an unknown one: no such context,
+    /// and never could be.
+    pub async fn context_info(&self, id: String) -> Result<crate::contexts_api::ContextInfo, Response> {
+        if !crate::chat_session::is_checkpoint_id(&id) {
+            return Err(unknown_context(&id).into_response());
+        }
+        match self.submit(Job::ContextInfo(id), "context_info").await? {
+            Reply::ContextInfo(r) => Ok(r),
+            _ => Err(Failure::Internal("worker answered a context lookup with something else".into()).into_response()),
+        }
+    }
+    /// `DELETE /v1/contexts/{id}`; ids as [`Self::context_info`].
+    pub async fn context_delete(&self, id: String) -> Result<crate::contexts_api::ContextDeleted, Response> {
+        if !crate::chat_session::is_checkpoint_id(&id) {
+            return Err(unknown_context(&id).into_response());
+        }
+        match self.submit(Job::ContextDelete(id), "context_delete").await? {
+            Reply::ContextDeleted(r) => Ok(r),
+            _ => Err(Failure::Internal("worker answered a context delete with something else".into()).into_response()),
+        }
+    }
+    /// `/v1/opinion` with `contexts`.
+    pub async fn opine_contexts(
+        &self,
+        request: crate::opinion_api::OpinionRequest,
+    ) -> Result<crate::opinion_api::OpinionMultiResponse, Response> {
+        request
+            .validate()
+            .map_err(|e| Failure::BadRequest(e).into_response())?;
+        if request.contexts.is_none() {
+            return Err(Failure::BadRequest("a multi-context read names its contexts".into()).into_response());
+        }
+        let questions = self.resolve_questions(&request)?;
+        match self.submit(Job::Opinion(request, questions), "opinion").await? {
+            Reply::OpinionMulti(r) => Ok(r),
+            _ => Err(
+                Failure::Internal("worker answered a multi-context opinion with something else".into())
+                    .into_response(),
+            ),
+        }
+    }
+    /// The handler's fast pre-check against this Handle's menu snapshot,
+    /// matching either id or name. Not authoritative (see the field doc on
+    /// `menu`): the worker re-resolves `request.spec` itself and is the one
+    /// that refuses an evicted or unknown spec.
+    #[allow(clippy::result_large_err)]
+    fn resolve_questions(
+        &self,
+        request: &crate::opinion_api::OpinionRequest,
+    ) -> Result<Vec<crate::opinion_api::ResolvedQuestion>, Response> {
+        let menu = self.menu.read().expect("menu lock poisoned");
+        let entry = menu
+            .iter()
+            .find(|e| e.id == request.spec || e.spec == request.spec)
+            .ok_or_else(|| unknown_spec(request.spec.as_str()).into_response())?;
+        entry
+            .resolve_all(&request.questions)
+            .map_err(|e| Failure::BadRequest(e).into_response())
+    }
     pub async fn opine(
         &self,
         request: crate::opinion_api::OpinionRequest,
@@ -4432,20 +4769,10 @@ impl Handle {
         request
             .validate()
             .map_err(|e| Failure::BadRequest(e).into_response())?;
-        // A fast pre-check against this Handle's menu snapshot, matching
-        // either id or name — not authoritative (see the field doc on
-        // `menu`): the worker re-resolves `request.spec` itself and is the
-        // one that actually refuses an evicted or unknown spec.
-        let questions = {
-            let menu = self.menu.read().expect("menu lock poisoned");
-            let entry = menu
-                .iter()
-                .find(|e| e.id == request.spec || e.spec == request.spec)
-                .ok_or_else(|| unknown_spec(request.spec.as_str()).into_response())?;
-            entry
-                .resolve_all(&request.questions)
-                .map_err(|e| Failure::BadRequest(e).into_response())?
-        };
+        if request.contexts.is_some() {
+            return Err(Failure::BadRequest("several contexts answer through opine_contexts".into()).into_response());
+        }
+        let questions = self.resolve_questions(&request)?;
         match self.submit(Job::Opinion(request, questions), "opinion").await? {
             Reply::Opinion(r) => Ok(r),
             _ => Err(
@@ -4552,7 +4879,9 @@ pub fn router(handle: Handle, probe_enabled: bool) -> Router {
                 .layer(DefaultBodyLimit::max(MAX_SPEC_BYTES)),
         )
         .route("/v1/opinion/specs/{id}", axum::routing::delete(delete_spec))
-        .route("/v1/chat", post(chat));
+        .route("/v1/chat", post(chat))
+        .route("/v1/contexts", post(context_create))
+        .route("/v1/contexts/{id}", get(context_info).delete(context_delete));
     if probe_enabled {
         router = router.route("/v1/probe", post(probe));
     }
@@ -4579,8 +4908,12 @@ async fn adjudicate(
 async fn opine(
     State(h): State<Handle>,
     crate::server::ValidJson(request): crate::server::ValidJson<crate::opinion_api::OpinionRequest>,
-) -> Result<Json<crate::opinion_api::OpinionResponse>, Response> {
-    h.opine(request).await.map(Json)
+) -> Result<Response, Response> {
+    if request.contexts.is_some() {
+        h.opine_contexts(request).await.map(|r| Json(r).into_response())
+    } else {
+        h.opine(request).await.map(|r| Json(r).into_response())
+    }
 }
 #[allow(clippy::result_large_err)]
 async fn chat(
@@ -4592,6 +4925,27 @@ async fn chat(
     } else {
         h.chat(request).await.map(|r| Json(r).into_response())
     }
+}
+#[allow(clippy::result_large_err)]
+async fn context_create(
+    State(h): State<Handle>,
+    crate::server::ValidJson(request): crate::server::ValidJson<crate::contexts_api::ContextRequest>,
+) -> Result<Json<crate::contexts_api::ContextCreated>, Response> {
+    h.context_create(request).await.map(Json)
+}
+#[allow(clippy::result_large_err)]
+async fn context_info(
+    State(h): State<Handle>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<crate::contexts_api::ContextInfo>, Response> {
+    h.context_info(id).await.map(Json)
+}
+#[allow(clippy::result_large_err)]
+async fn context_delete(
+    State(h): State<Handle>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<crate::contexts_api::ContextDeleted>, Response> {
+    h.context_delete(id).await.map(Json)
 }
 #[allow(clippy::result_large_err)]
 async fn probe(
@@ -5415,6 +5769,8 @@ mod priority_tests {
         .unwrap();
         let chat: crate::chat_session::ChatRequest =
             serde_json::from_value(serde_json::json!({"messages": [{"role": "user", "content": "hi"}]})).unwrap();
+        let context: crate::contexts_api::ContextRequest =
+            serde_json::from_value(serde_json::json!({"system": "s"})).unwrap();
         for (job, class) in [
             (Job::Adjudicate(adjudicate(true)), Priority::Interactive),
             (Job::Opinion(opinion, vec![]), Priority::Interactive),
@@ -5423,6 +5779,9 @@ mod priority_tests {
             (Job::Register("id".into(), prompt), Priority::Generative),
             (Job::Unregister("id".into()), Priority::Generative),
             (Job::Chat(chat, None), Priority::Generative),
+            (Job::ContextInfo("id".into()), Priority::Interactive),
+            (Job::ContextCreate(context), Priority::Generative),
+            (Job::ContextDelete("id".into()), Priority::Generative),
         ] {
             assert_eq!(job.priority(), class, "{}", job.operation());
         }

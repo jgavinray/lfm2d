@@ -83,6 +83,7 @@ impl Generator for Stub {
         self.0.lock().unwrap().reads.push(request.context.as_ref().map(|c| c.checkpoint.clone()));
         Ok(OpinionResponse {
             prefix: info(),
+            context_tokens: None,
             spec: request.spec.clone(),
             context: request.context.clone(),
             described: vec![],

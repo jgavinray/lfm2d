@@ -219,6 +219,63 @@ prefix the daemon filled in the background. The response echoes
 `rendered_sha256` covers the whole chat. A spec with `tools` cannot read a
 tail (`400`), nor can a state that begins with a newline.
 
+**18. A held context is evidence to read after, never a chat
+(2026-10-03).** `POST /v1/contexts` builds a context from `system`,
+`tools` and `messages` (user, tool and assistant turns) and answers `{id,
+n_tokens, cached_tokens, prefill_ms, pinned, bytes}`; `GET` and `DELETE
+/v1/contexts/{id}` look one up and drop one. The id is the sha256 of a
+domain tag and the token ids, so the same content gets the same id however
+it was built, and it is never a chat checkpoint's id, even for the same
+ids: a chat's generated tokens were decoded one at a time and a context's
+are prefilled, which on this engine are different numbers. A context reads
+like a chat checkpoint (invariant 17's tail read, `context: {checkpoint:
+id}`), but it is not one: `/v1/chat` refuses to continue `from` a context
+(`400`), because its assistant turns were never generated here, and
+`/v1/contexts/{id}` answers only for contexts. Contexts share the checkpoint store and its budget.
+`pin: true` exempts one from eviction; pins hold at most half the budget
+(past that, `507 insufficient_storage`); `pin: false` unpins; absent
+leaves it as it was. A refused pin leaves nothing behind that the request
+built. A delete is not reference-counted: two consumers that pin the same
+content share one context. A restart forgets every context.
+An unknown id, and one that is not 64 lowercase hex digits, is a `404`:
+build it again from its content, which gives the same id back. A turn
+holding control-token text is refused (`400`), never escaped.
+
+**19. A multi-context read pools; it never picks (2026-10-03).**
+`/v1/opinion` with `contexts` (1 to 8 distinct held ids, exclusive with
+`context`) runs invariant 17's tail read once per context, serially in
+request order, and answers `{spec, contexts, reads, pooled, pool,
+queue_ms}`. `reads[c]` is the answer `context: {checkpoint: contexts[c]}`
+gives, bit for bit in every number but `queue_ms`, which is 0 there: the
+job's queue time is the response's own `queue_ms`. Each read carries
+`context_tokens`, the length of the context it forked, so a caller can see
+a nearly empty context or one far longer than the rest. `pooled` has one
+entry per question, `{field, options, probs, weights, agree, spread,
+leave_one_out}`:
+- `probs` pools each context's option probabilities. `pool.method` is
+  `linear` (the weighted average: some context supports it) or
+  `loglinear` (the normalised weighted product: the contexts agree on it,
+  and any one context can veto an option). `pool.weights` is `uniform`,
+  `mass` (each read's `exp(sequence_mass)`), or one weight per context.
+  Default: linear, uniform.
+- `weights`: the normalised weight each context pooled with, in request
+  order. A 0 is a context that did not count; leave-one-out drops one
+  context and renormalises the rest, so a context with weight 0 moves
+  nothing, and dropping the only weighted contexts gives a `null` row.
+- `agree`: every context's top option is the same (ties go to the earlier
+  option).
+- `spread`: the largest per-option gap between contexts.
+- `leave_one_out[c]`: `probs` without context `c`.
+
+Sums run in request order, so a pool replays bit for bit from its reads.
+There is no winner, as for one read. A pooled probability is not
+calibrated because its inputs were, and invariant 8 holds per set of
+contexts: thresholds fitted on one set do not carry to another. The
+disagreement is an output, not noise to average away: read the reads
+beside the pool. A context the engine does not hold fails the whole read
+(`404`). The design follows the megakernel council
+(`megakernel-qwen38-flashnext-strixhalo`, MIT).
+
 ## Operational numbers (measured, dated — re-measure before designing on them)
 
 The encoder-head numbers that stood here measured the retired severity

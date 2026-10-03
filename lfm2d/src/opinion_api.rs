@@ -124,6 +124,16 @@ pub struct OpinionRequest {
     /// `null` or absent: the spec's own prompt, as before.
     #[serde(default)]
     pub context: Option<OpinionContext>,
+    /// Several held contexts to read after, 1 to [`MAX_CONTEXTS`] distinct
+    /// ids (chat checkpoints or `/v1/contexts`): the same read as `context`
+    /// once per id, serially in request order, then each question pooled
+    /// across them ([`crate::pool`]). The answer is an
+    /// [`OpinionMultiResponse`]. Exclusive with `context`.
+    #[serde(default)]
+    pub contexts: Option<Vec<String>>,
+    /// How `contexts` pool; defaults to linear, uniform. Only with `contexts`.
+    #[serde(default)]
+    pub pool: Option<crate::pool::PoolSettings>,
     /// One or more choice fields. They share one description: the engine
     /// walks the grammar once and reads each slot as it passes it, so the
     /// answers come back in emission order whatever order they were asked.
@@ -151,6 +161,32 @@ impl OpinionRequest {
             && !crate::chat_session::is_checkpoint_id(&context.checkpoint)
         {
             return Err("context.checkpoint must be a checkpoint id: 64 lowercase hex digits".into());
+        }
+        match &self.contexts {
+            Some(_) if self.context.is_some() => {
+                return Err("give `context` (one) or `contexts` (several), not both".into());
+            }
+            Some(ids) => {
+                if ids.is_empty() || ids.len() > MAX_CONTEXTS {
+                    return Err(format!("contexts takes 1 to {MAX_CONTEXTS} ids, got {}", ids.len()));
+                }
+                if let Some(bad) = ids.iter().find(|id| !crate::chat_session::is_checkpoint_id(id)) {
+                    return Err(format!("contexts: {bad:?} is not a checkpoint id (64 lowercase hex digits)"));
+                }
+                let distinct: std::collections::BTreeSet<&String> = ids.iter().collect();
+                if distinct.len() != ids.len() {
+                    return Err("contexts must be distinct: the same content is one context, and the pool \
+                                would count its voice twice"
+                        .into());
+                }
+                if let Some(pool) = &self.pool {
+                    pool.validate(ids.len()).map_err(|e| format!("pool: {e}"))?;
+                }
+            }
+            None if self.pool.is_some() => {
+                return Err("pool takes `contexts`; one read has nothing to pool".into());
+            }
+            None => {}
         }
         if self.questions.is_empty() {
             return Err("ask at least one question".into());
@@ -417,6 +453,11 @@ pub struct OpinionResponse {
     /// forked. Absent for a read of the spec's own prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<OpinionContext>,
+    /// How many tokens the forked context holds (a tail read only): beside a
+    /// pool, the cue that one context is nearly empty or far longer than the
+    /// rest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<usize>,
     /// The fields generated before the LAST asked slot, as the model wrote
     /// them; an earlier answer was read on a prefix of this description.
     pub described: Vec<DescribedField>,
@@ -454,6 +495,86 @@ pub struct OpinionResponse {
     pub prefill_ms: f64,
     pub describe_ms: f64,
     pub read_ms: f64,
+}
+
+/// The most contexts one `/v1/opinion` reads after.
+pub const MAX_CONTEXTS: usize = 8;
+
+impl OpinionRequest {
+    /// This request as one tail read after `checkpoint`: what each of a
+    /// multi-context read's reads computes.
+    pub fn for_context(&self, checkpoint: &str) -> Self {
+        Self {
+            context: Some(OpinionContext { checkpoint: checkpoint.to_owned() }),
+            contexts: None,
+            pool: None,
+            ..self.clone()
+        }
+    }
+}
+
+/// One question pooled across a multi-context read's reads.
+#[derive(Clone, Debug, Serialize)]
+pub struct PooledAnswer {
+    pub field: String,
+    /// The options `probs` (and each `leave_one_out` row) follow.
+    pub options: Vec<String>,
+    #[serde(flatten)]
+    pub pooled: crate::pool::Pooled,
+}
+
+/// `/v1/opinion` with `contexts`: every context's own read, in request
+/// order, and each question pooled across them. Like a single read, no
+/// winner: the caller picks from its own thresholds, and a pooled
+/// probability is not calibrated because its inputs were.
+#[derive(Clone, Debug, Serialize)]
+pub struct OpinionMultiResponse {
+    pub spec: String,
+    pub contexts: Vec<String>,
+    /// `reads[c]` is the read after `contexts[c]`, exactly the answer
+    /// `context: {checkpoint: contexts[c]}` gives.
+    pub reads: Vec<OpinionResponse>,
+    /// One per question, in the reads' answer order.
+    pub pooled: Vec<PooledAnswer>,
+    /// The pool settings, defaults filled in.
+    pub pool: crate::pool::PoolSettings,
+    pub queue_ms: f64,
+}
+
+/// Pool each question across `reads` (one per context, request order):
+/// each context's raw option logprobs and raw mass (`exp(sequence_mass)`).
+/// Every read must have answered the same questions with the same options.
+pub fn pool_reads(
+    reads: &[OpinionResponse],
+    settings: &crate::pool::PoolSettings,
+) -> Result<Vec<PooledAnswer>, String> {
+    let first = reads.first().ok_or("no reads to pool")?;
+    first
+        .answers
+        .iter()
+        .enumerate()
+        .map(|(q, answer)| {
+            let options: Vec<String> = answer.read.options.iter().map(|o| o.option.clone()).collect();
+            let mut logprobs = Vec::with_capacity(reads.len());
+            let mut mass = Vec::with_capacity(reads.len());
+            for (c, read) in reads.iter().enumerate() {
+                let other = read
+                    .answers
+                    .get(q)
+                    .filter(|a| a.field == answer.field)
+                    .ok_or_else(|| format!("read {c} did not answer {:?} in place {q}", answer.field))?;
+                let names: Vec<&String> = other.read.options.iter().map(|o| &o.option).collect();
+                if names != options.iter().collect::<Vec<_>>() {
+                    return Err(format!("read {c} scored other options for {:?}", answer.field));
+                }
+                logprobs.push(other.read.options.iter().map(|o| f64::from(o.logprob)).collect());
+                mass.push(f64::from(other.read.sequence_mass).exp());
+            }
+            let pooled = crate::pool::pool(&logprobs, &mass, settings)
+                .map_err(|e| format!("{:?}: can't pool these reads: {e}", answer.field))?;
+            Ok(PooledAnswer { field: answer.field.clone(), options, pooled })
+        })
+        .collect()
 }
 
 /// `prob[top] - prob[runner-up]` over renormalised option probabilities.

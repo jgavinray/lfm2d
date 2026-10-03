@@ -124,6 +124,7 @@ impl Generator for Fake {
         let question = questions.first().expect("the handler never sends none");
         Ok(OpinionResponse {
             prefix: info(),
+            context_tokens: None,
             spec: request.spec.clone(),
             context: request.context.clone(),
             described: vec![],

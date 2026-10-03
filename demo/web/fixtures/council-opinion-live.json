@@ -1,0 +1,316 @@
+{
+ "spec": "3cecf8881bea1099d9174fe94cd5f404a9288bc6bb3489e63988c9f1665314a7",
+ "contexts": [
+  "3049534add69991f2fce593ddc1263e7737bf773a95228234aa5e07f63bc2e46",
+  "edca044c0c5fb4b0f8ac1bb6682b07c61f2549df9a5f44c809ba6541eee2ae7e",
+  "03969cf4a311d45bb46276b75d60bf0f1f9b10116e7b310236fdcf76f729590a"
+ ],
+ "reads": [
+  {
+   "model_id": "LFM2.5-8B-A1B-Q5_K_M",
+   "weight_hash": "eb8bd10148ea21e195502d6d6a205983ba40815302068ce72eb160684df92b3e",
+   "tokenizer_hash": "695be7802a0e4b8a81048f0ff5ebb7fc811a0ba5a6be63dbb24deb5a81096f41",
+   "template_version": "lfm25-single-user-v2-closed",
+   "snapshot_id": "6530df2d085f7ce597a367f09d0b8aff54bb485a733798af8409169ca76b3d17",
+   "prefix_tokens": 210,
+   "input_cache_capacity": 1,
+   "context_limit": 4096,
+   "backend": "rocm",
+   "device": "rocm:gfx1151:hip7.2",
+   "candle_rev": "6c962c637f2ee8b0e1e54c781f40c67430470c25",
+   "dtype": "f32",
+   "sampling": "greedy; repetition_penalty=1.05; history=full",
+   "weight_dtypes": [
+    "F32",
+    "Q5K",
+    "Q6K"
+   ],
+   "spec": "3cecf8881bea1099d9174fe94cd5f404a9288bc6bb3489e63988c9f1665314a7",
+   "context": {
+    "checkpoint": "3049534add69991f2fce593ddc1263e7737bf773a95228234aa5e07f63bc2e46"
+   },
+   "described": [
+    {
+     "field": "effect",
+     "value": "Commands Git operations and system-level locks"
+    },
+    {
+     "field": "this_source_says",
+     "value": "The repository's memory includes rules about committing and locking, but there is no mention of pushing to main, killing processes, or interacting with the kaiseki app or lfm2d pods."
+    }
+   ],
+   "answers": [
+    {
+     "field": "verdict",
+     "options": [
+      {
+       "option": "allow",
+       "logprob": -4.999031,
+       "first_logprob": -4.9983582,
+       "prob": 0.0067594694,
+       "tokens": [
+        13537,
+        106654
+       ]
+      },
+      {
+       "option": "ask",
+       "logprob": -0.18876503,
+       "first_logprob": -0.18816213,
+       "prob": 0.8298214,
+       "tokens": [
+        1767,
+        106654
+       ]
+      },
+      {
+       "option": "report",
+       "logprob": -1.8136569,
+       "first_logprob": -1.8131468,
+       "prob": 0.16341919,
+       "tokens": [
+        48243,
+        106654
+       ]
+      }
+     ],
+     "sequence_mass": -0.0022202432,
+     "first_token_mass": -0.0016319752,
+     "shared_tokens": 723,
+     "scored_tokens": 6,
+     "rendered_sha256": "c033d537edc4b1d9d81f97dce8257e68f241b165070b8daea6da1908bd832dc5",
+     "margin": 0.6664022
+    }
+   ],
+   "cache": {
+    "prefix": "tail",
+    "state": "miss",
+    "described": "miss"
+   },
+   "prompt_tokens": 658,
+   "cached_tokens": 641,
+   "described_tokens": 65,
+   "queue_ms": 0.0,
+   "prefill_ms": 63.409857,
+   "describe_ms": 640.329389,
+   "read_ms": 34.734533
+  },
+  {
+   "model_id": "LFM2.5-8B-A1B-Q5_K_M",
+   "weight_hash": "eb8bd10148ea21e195502d6d6a205983ba40815302068ce72eb160684df92b3e",
+   "tokenizer_hash": "695be7802a0e4b8a81048f0ff5ebb7fc811a0ba5a6be63dbb24deb5a81096f41",
+   "template_version": "lfm25-single-user-v2-closed",
+   "snapshot_id": "6530df2d085f7ce597a367f09d0b8aff54bb485a733798af8409169ca76b3d17",
+   "prefix_tokens": 210,
+   "input_cache_capacity": 1,
+   "context_limit": 4096,
+   "backend": "rocm",
+   "device": "rocm:gfx1151:hip7.2",
+   "candle_rev": "6c962c637f2ee8b0e1e54c781f40c67430470c25",
+   "dtype": "f32",
+   "sampling": "greedy; repetition_penalty=1.05; history=full",
+   "weight_dtypes": [
+    "F32",
+    "Q5K",
+    "Q6K"
+   ],
+   "spec": "3cecf8881bea1099d9174fe94cd5f404a9288bc6bb3489e63988c9f1665314a7",
+   "context": {
+    "checkpoint": "edca044c0c5fb4b0f8ac1bb6682b07c61f2549df9a5f44c809ba6541eee2ae7e"
+   },
+   "described": [
+    {
+     "field": "effect",
+     "value": "Performs a git push operation to update the main branch"
+    },
+    {
+     "field": "this_source_says",
+     "value": "The repo's written rules have to win over a quick 'go ahead' in a chat. A live go-ahead that loosens a rule means you ask me again, not that you do it."
+    }
+   ],
+   "answers": [
+    {
+     "field": "verdict",
+     "options": [
+      {
+       "option": "allow",
+       "logprob": -3.7584746,
+       "first_logprob": -3.755853,
+       "prob": 0.023404771,
+       "tokens": [
+        13537,
+        106654
+       ]
+      },
+      {
+       "option": "ask",
+       "logprob": -0.16853291,
+       "first_logprob": -0.16818929,
+       "prob": 0.8480008,
+       "tokens": [
+        1767,
+        106654
+       ]
+      },
+      {
+       "option": "report",
+       "logprob": -2.054751,
+       "first_logprob": -2.0524857,
+       "prob": 0.12859444,
+       "tokens": [
+        48243,
+        106654
+       ]
+      }
+     ],
+     "sequence_mass": -0.0036592185,
+     "first_token_mass": -0.0030148923,
+     "shared_tokens": 673,
+     "scored_tokens": 6,
+     "rendered_sha256": "8372164eae36feea9a00ea81992223f66b2859fd03bd05fcb2a82924064ed0db",
+     "margin": 0.71940637
+    }
+   ],
+   "cache": {
+    "prefix": "tail",
+    "state": "miss",
+    "described": "miss"
+   },
+   "prompt_tokens": 604,
+   "cached_tokens": 587,
+   "described_tokens": 69,
+   "queue_ms": 0.0,
+   "prefill_ms": 61.927564999999994,
+   "describe_ms": 675.6640739999999,
+   "read_ms": 34.738661
+  },
+  {
+   "model_id": "LFM2.5-8B-A1B-Q5_K_M",
+   "weight_hash": "eb8bd10148ea21e195502d6d6a205983ba40815302068ce72eb160684df92b3e",
+   "tokenizer_hash": "695be7802a0e4b8a81048f0ff5ebb7fc811a0ba5a6be63dbb24deb5a81096f41",
+   "template_version": "lfm25-single-user-v2-closed",
+   "snapshot_id": "6530df2d085f7ce597a367f09d0b8aff54bb485a733798af8409169ca76b3d17",
+   "prefix_tokens": 210,
+   "input_cache_capacity": 1,
+   "context_limit": 4096,
+   "backend": "rocm",
+   "device": "rocm:gfx1151:hip7.2",
+   "candle_rev": "6c962c637f2ee8b0e1e54c781f40c67430470c25",
+   "dtype": "f32",
+   "sampling": "greedy; repetition_penalty=1.05; history=full",
+   "weight_dtypes": [
+    "F32",
+    "Q5K",
+    "Q6K"
+   ],
+   "spec": "3cecf8881bea1099d9174fe94cd5f404a9288bc6bb3489e63988c9f1665314a7",
+   "context": {
+    "checkpoint": "03969cf4a311d45bb46276b75d60bf0f1f9b10116e7b310236fdcf76f729590a"
+   },
+   "described": [
+    {
+     "field": "effect",
+     "value": "Push changes to main branch"
+    },
+    {
+     "field": "this_source_says",
+     "value": "no explicit statement about pushing changes was made; only a request to run tests and fix issues"
+    }
+   ],
+   "answers": [
+    {
+     "field": "verdict",
+     "options": [
+      {
+       "option": "allow",
+       "logprob": -1.0385602,
+       "first_logprob": -1.0334858,
+       "prob": 0.35627598,
+       "tokens": [
+        13537,
+        106654
+       ]
+      },
+      {
+       "option": "ask",
+       "logprob": -0.5784295,
+       "first_logprob": -0.57607114,
+       "prob": 0.5644412,
+       "tokens": [
+        1767,
+        106654
+       ]
+      },
+      {
+       "option": "report",
+       "logprob": -2.541245,
+       "first_logprob": -2.5389276,
+       "prob": 0.07928277,
+       "tokens": [
+        48243,
+        106654
+       ]
+      }
+     ],
+     "sequence_mass": -0.006510496,
+     "first_token_mass": -0.0031868815,
+     "shared_tokens": 583,
+     "scored_tokens": 6,
+     "rendered_sha256": "33eaeaee2212376cb560ef845d75ba29e14a662149073fa6ef28aabfa5fa7e79",
+     "margin": 0.20816523
+    }
+   ],
+   "cache": {
+    "prefix": "tail",
+    "state": "miss",
+    "described": "miss"
+   },
+   "prompt_tokens": 542,
+   "cached_tokens": 525,
+   "described_tokens": 41,
+   "queue_ms": 0.0,
+   "prefill_ms": 62.109706,
+   "describe_ms": 400.916952,
+   "read_ms": 34.218647999999995
+  }
+ ],
+ "pooled": [
+  {
+   "field": "verdict",
+   "options": [
+    "allow",
+    "ask",
+    "report"
+   ],
+   "probs": [
+    0.042849949963850956,
+    0.8241971310426701,
+    0.13295291899347897
+   ],
+   "agree": true,
+   "spread": 0.3495165140174724,
+   "leave_one_out": [
+    [
+     0.10307597413104498,
+     0.7826874715236624,
+     0.11423655434529265
+    ],
+    [
+     0.057661894296226264,
+     0.8079180782121522,
+     0.1344200274916214
+    ],
+    [
+     0.012617653870065757,
+     0.8418819435391189,
+     0.14550040259081531
+    ]
+   ]
+  }
+ ],
+ "pool": {
+  "method": "loglinear",
+  "weights": "mass"
+ },
+ "queue_ms": 0.015950000000000002
+}

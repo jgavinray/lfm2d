@@ -232,7 +232,7 @@ class HostTests(unittest.TestCase):
 
 # Pages a person uses rather than watches: they reflow to the window (a
 # phone included) instead of scaling a fixed 9:16 stage.
-INTERACTIVE = {"index.html", "tail.html"}
+INTERACTIVE = {"index.html", "tail.html", "council.html"}
 
 
 class PageTests(unittest.TestCase):

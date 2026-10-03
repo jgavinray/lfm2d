@@ -56,6 +56,18 @@ pub fn checkpoint_id(ids: &[u32]) -> String {
     crate::hash::sha256_hex_bytes(&bytes)
 }
 
+/// A held context's id ([`crate::contexts_api`]): the sha256 of a domain tag
+/// and then the ids, so a context never shares an id with a chat checkpoint.
+/// The two are different computations of the same ids: a chat's generated
+/// tokens were decoded one at a time, a context's assistant turns are
+/// prefilled, and this engine's numbers depend on the block size. One id
+/// naming both would make a read of it depend on which was held first.
+pub fn context_id(ids: &[u32]) -> String {
+    let mut bytes = b"lfm2d-context\0".to_vec();
+    bytes.extend(ids.iter().flat_map(|id| id.to_le_bytes()));
+    crate::hash::sha256_hex_bytes(&bytes)
+}
+
 /// Whether `id` could name a checkpoint: 64 lowercase hex digits.
 pub fn is_checkpoint_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -67,6 +79,10 @@ pub enum CheckpointKind {
     /// Ends at a chat turn boundary (`<|im_end|>\n`): a chat continues from
     /// it and a read forks it.
     ChatTurn,
+    /// A held context (`POST /v1/contexts`, [`crate::contexts_api`]): ends at
+    /// a turn boundary too, and may hold assistant turns this daemon never
+    /// generated, so a read forks it but no chat continues from it.
+    Context,
 }
 
 /// The chat checkpoints' store: [`crate::state_store::StateStore`], by

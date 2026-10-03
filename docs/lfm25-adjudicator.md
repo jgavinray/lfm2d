@@ -817,6 +817,57 @@ itself changed the top option from the spec's own prompt on 1 of 24
 questions. Treat a tail read as its own instrument (`docs/integration.md`
 invariant 17).
 
+### Held contexts and multi-context reads (the council)
+
+Built 2026-10-03 after the megakernel council (`megakernel-qwen38-flashnext-strixhalo`,
+`council/` and `service/pool.py`, MIT): several sources of context judge one
+action, each from inside itself, and the disagreement is reported beside the
+pool. The contract is `docs/integration.md` invariants 18 and 19. The code is
+`lfm2d/src/contexts_api.rs` (wire types), `Adjudicator::build_context`,
+`Generator::opine_contexts` (the loop) and `lfm2d/src/pool.rs` (the math).
+
+- **A context is a checkpoint of its own kind and its own id.** `POST
+  /v1/contexts` renders and encodes each turn alone, as a chat turn does.
+  `CheckpointKind::Context` lets a tail read fork it and stops `/v1/chat`
+  from continuing it: a context may carry assistant turns this daemon never
+  generated (an agent session's transcript), and invariant 16 is about
+  chats. Its id is `context_id`, the sha256 of a domain tag and the ids,
+  never the chat checkpoint id of the same ids: a chat's generated tokens
+  were decoded one at a time, a context's are prefilled, and on this engine
+  those are different numbers (block size picks the kernel). The first cut
+  shared the id; the store keeps the first value under an id, so a context
+  re-rendering a chat's reply forwarded from the decoded state, and a
+  context could shadow a later chat checkpoint (kaibo review, 2026-10-03).
+  `contexts_real` reproduces the first on the real 8B: the replayed reply's
+  286 tokens are exactly the assistant checkpoint's.
+- **A build forwards from the longest held context that is a prefix ending
+  at a turn.** Under the canonical schedule (each segment chunked from its
+  own start), that state is the whole build's, so adding a message to a tab
+  forwards one message. `contexts_real` checks it through a read after each
+  build, bit for bit.
+- **Pins** live in `StateStore`: eviction and group caps pass over them,
+  they may hold half the checkpoint budget, and an insert that could only
+  fit by evicting a pin is refused before anything goes (`507`).
+- **The reads are serial.** One job runs the one-context tail read per
+  context in request order. The fork's batched decode is not bit-identical
+  to serial on this engine (60/64 top-1 at B=8, 2026-09-26), and a pool
+  over batched reads would blend that difference in. The megakernel batches
+  because its engine is bit-identical batched.
+- **The pool** is `pool.py` ported: f64, sums in request order, linear and
+  log-linear, uniform/mass/given weights, per-context agreement, spread,
+  leave-one-out, and no winner. Inputs are each read's raw option logprobs
+  (renormalised over the options per context) and `exp(sequence_mass)`.
+- **Whether to describe first is the spec's choice.** A spec whose first
+  field is the asked one reads the slot cold, as the megakernel's letters
+  do; a describe-first spec describes inside each context, which keeps the
+  separation (one shared description would erase it). F9 measured the cold
+  verdict slot as noise on bare shell commands; contexts carry facts F9's
+  rows did not, so measure both on the council scenario rather than assume.
+
+First real numbers (2026-10-03, ROCm, `email-triage-v1`, two contexts that
+differ by two turns): the contexts split on `feeling` (spread 0.83, no
+agreement) and agreed on `verdict` (spread 0.20). One run, a smoke number.
+
 ## Probe and tokenize
 
 Ruled 2026-09-23, `docs/system1-split-plan.md` (git f9ca081) "Tokenize and probe

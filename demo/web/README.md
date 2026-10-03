@@ -1,7 +1,7 @@
 # Web demos
 
 Browser pages against a running lfm2d. Most play themselves, sized 9:16 for
-recording a tab; `/tail` is one you use. Python 3.10+, standard library only.
+recording a tab; `/tail` and `/council` are ones you use. Python 3.10+, standard library only.
 
 ```sh
 python3 demo/web/server.py --upstream 'http://<lfm2d host>:8088' --host 127.0.0.1
@@ -216,6 +216,85 @@ benchmark. The v1 specs and every travel variant are in
   chance. A tail read after the assistant's turn reads a different prompt
   from one at `checkpoint_user`, so its numbers are its own: the same offer
   moved from 0.52 to 0.19 between them.
+
+## Council (`/council`)
+
+Several held contexts judge each proposed agent action. Ported from the
+megakernel council (`megakernel-qwen38-flashnext-strixhalo`, MIT; its
+scenario verbatim). On the left, tabs: Memory (the repo's written rules),
+User (Amy's standing guidance), Session (what she typed in the last hour),
+each pinned on the daemon as a held context (`POST /v1/contexts`). On the
+right, an action is one `/v1/opinion` with `contexts`, read after every
+included tab in tab order. The page shows each context's odds over the
+spec's options beside its raw mass (flagged under 50%), its length and the
+weight it pooled with; the pooled verdict under both pools (linear and
+loglinear: the ternary plot's two stars); agree / spread; leave-one-out
+("without Memory → allow, PIVOTAL"); and a pulsing alert, kept up until
+acknowledged, for the loudest option. The daemon never picks: the verdict
+is the pool's top option, ties to the earlier one.
+
+- **Backfill.** Edit, add or delete a tab's message, include or exclude a
+  tab, or switch the spec, and the last 12 decisions are re-read; the cards
+  whose verdict flipped light up in the color of what changed. A pool change
+  re-pools the stored reads without reading.
+- **Replay** re-reads one decision under the same contexts and spec and
+  compares the bits: a repeated read is identical (invariant 17), so a
+  mismatch is shown as a bug.
+- **The pool is checked.** `council.py` recomputes every read's pool with
+  `council_pool.py` (the operations of `lfm2d/src/pool.rs`, after rounding
+  the JSON numbers back to the f32 they were) and fails the read loudly on
+  any difference.
+- **Ask** runs System 2 in a tab: a streamed `/v1/chat` from the tab's
+  system turn and messages plus the question; the reply, with its
+  reasoning, joins the tab and the tab is pinned again. `/v1/chat` never
+  takes an assistant turn back as text, so a later ask continues the chat
+  that wrote the tab's replies (`from` its checkpoint) while the tab still
+  holds exactly that chat (notes added after it go along as user turns). A
+  tab whose reply no chat holds any more (edited, or the daemon restarted)
+  refuses the ask with a 400 saying so: delete the reply, or add the
+  question as a note.
+- **Two specs** (`static/`, uploaded at boot, field and options read from
+  the menu): `council-verdict-v1` asks the verdict cold, as its first and
+  only field; `council-describe-v1` has each context write what the action
+  does and what this source says about it, then the verdict, so every
+  description comes from inside its own context. Both share the options,
+  and the scenario's `REVIEWER` framing sits in every tab's system turn.
+- **Restarts.** A read that meets a 404 for a lost context or spec pins the
+  tabs again or uploads the specs again (each at most once) and retries;
+  ids are the content, so they come back the same.
+- **Trust.** An action is the read's input. The daemon refuses control-token
+  text in it, and in any tab turn, rather than escaping it; the 400 is shown
+  as it came. No action or tab text can forge a chat turn.
+
+The council keeps its state in `server.py` (`council.py`, mounted under
+`/council/api/*`, started on the first request there; it waits for a daemon
+that is not up yet). Any daemon with the opinion engine serves it:
+
+```sh
+python3 demo/web/server.py --upstream 'http://127.0.0.1:8095' --host 127.0.0.1
+# http://127.0.0.1:8765/council
+```
+
+First live run, 2026-10-03 (LFM2.5-8B-A1B Q5_K_M, ROCm gfx1151, candle
+`6c962c63`, context 4096, the GPU shared with a test run, so times vary;
+the scenario's `rules` hint is the author's reading, not gold, and nothing
+was tuned on it):
+
+| spec | Memory | User | Session | pooled (lin / loglin) = hint | agree | per decision, first / median / replay |
+|---|---|---|---|---|---|---|
+| verdict, cold | ask ×15 (0.93-0.98) | ask ×15 (0.91-0.98) | allow ×14, ask ×1 | ask ×15: 5 / 5 of 15 | 1 / 15 | 1.75 s / 0.77 s / 0.68 s |
+| describe first | ask ×15 (0.61-0.97) | ask ×14, report ×1 (0.51) | allow ×14, ask ×1 | 4 / 5 of 15 | 1 / 15 | 2.71 s / 2.03 s / 1.95 s |
+
+Raw mass was 99-100% on every read, and all 30 replays matched to the bit.
+The contexts split exactly one way: the rules and the guidance say ask for
+everything, routine reads included, and the session says allow for nearly
+everything, the force-push and `pkill -f` included; no context picked the
+loudest option outright on any of the four destructive actions (User's 0.51
+on the force-push under the describe spec is the one). The descriptions show
+why the session allows: it reads "tests are green, push it" as covering the
+action. An ask in the Memory tab (~30 s, reasoning included) flipped
+two describe-spec decisions (the path-scoped commit ask → allow, the
+`gh issue create` allow → ask).
 
 ## The Sour Note (`/sour-note`)
 
