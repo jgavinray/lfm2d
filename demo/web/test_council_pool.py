@@ -8,14 +8,20 @@ of the sums (math.fsum and products of powers there, running loops here): a few 
 terms and the log-linear exponent's magnitude. 1e-12 relative leaves wide headroom and sits far below a logic bug
 (dropping a renormalization or pooling raw logprobs moves results by 1e-3 or more). Probabilities are compared
 relatively (a 1e-26 probability must be right to 1e-12 of itself); `spread` absolutely at 1e-15; `agree` exactly.
+
+The daemon fixture (fixtures/council-opinion-live.json) is one real multi-context /v1/opinion answer from the live
+run: there the recomputation must give the daemon's pooled numbers bit for bit, as council.py demands on every read.
 """
+import json
 import math
 import random
 import unittest
+from pathlib import Path
 
 import council_pool as pool
 
 RTOL = 1e-12
+HERE = Path(__file__).resolve().parent
 
 
 def ref_pool(logits, mass, method, weights):
@@ -186,6 +192,24 @@ class PoolTests(unittest.TestCase):
         # 0.1 as f32 is 0.100000001490116...: the JSON text "0.1" must not be pooled as the f64 0.1.
         self.assertEqual(pool.f32(0.1), 0.10000000149011612)
         self.assertEqual(pool.f32(pool.f32(-1.2345)), pool.f32(-1.2345))
+
+
+class DaemonBitsTests(unittest.TestCase):
+    """One real /v1/opinion answer: three contexts, the describe-first spec, loglinear and mass weights, the push case
+    (the live run, LFM2.5-8B-A1B Q5_K_M on ROCm gfx1151, 2026-10-03; a daemon from before `pooled.weights`)."""
+
+    def test_the_recomputation_is_the_daemons_pool_to_the_bit(self):
+        r = json.loads((HERE / "fixtures" / "council-opinion-live.json").read_text())
+        lp = [[pool.f32(o["logprob"]) for o in x["answers"][0]["options"]] for x in r["reads"]]
+        mass = [math.exp(pool.f32(x["answers"][0]["sequence_mass"])) for x in r["reads"]]
+        mine = pool.pool(lp, mass, r["pool"]["method"], r["pool"]["weights"])
+        theirs = {k: v for k, v in r["pooled"][0].items() if k not in ("field", "options")}
+        self.assertEqual(set(theirs), {"probs", "agree", "spread", "leave_one_out"})
+        self.assertEqual({k: mine[k] for k in theirs}, theirs)
+        # and the f32 step is load-bearing: pooling the JSON numbers as parsed misses the daemon's bits
+        raw = [[o["logprob"] for o in x["answers"][0]["options"]] for x in r["reads"]]
+        self.assertNotEqual(pool.pool(raw, mass, r["pool"]["method"], r["pool"]["weights"])["probs"],
+                            theirs["probs"])
 
 
 if __name__ == "__main__":
