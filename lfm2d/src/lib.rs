@@ -84,6 +84,7 @@ pub mod engine_stub;
 pub mod hash;
 pub mod opinion;
 pub mod opinion_api;
+pub mod pool;
 pub mod probe;
 pub mod probe_api;
 pub mod server;
