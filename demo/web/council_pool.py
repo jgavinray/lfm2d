@@ -20,7 +20,7 @@ number back to the f32 it was before anything here uses it.
 - spread: max over options of (max_c p - min_c p).
 - weights: the normalized weight each context pooled with, in request order (a 0 did not count).
 - leave_one_out[c]: the pooled probabilities without context c (empty for one context; None where the remaining
-  weights sum to 0).
+  weights sum to 0, or where a log-linear pool of the rest rules every option out).
 
 No winner: the pick is the caller's (`argmax` here, ties to the earlier option, is the council's own). A pooled
 probability is not calibrated just because each context's was: nothing here fits anything.
@@ -93,6 +93,8 @@ def _combine(method: str, ls: list[list[float]], ps: list[list[float]], g: list[
     mx = -math.inf
     for x in acc:
         mx = max(mx, x)
+    if mx == -math.inf:  # every option ruled out by some weighted context: no distribution
+        return [math.nan] * k
     e = [math.exp(x - mx) for x in acc]
     total = _sum_in_order(e)
     return [x / total for x in e]
@@ -160,7 +162,8 @@ def pool(logprobs: list[list[float]], mass: list[float], method: str, weights) -
     if n >= 2:
         for drop in range(n):
             keep = [c for c in range(n) if c != drop]
-            loo.append(_combine(method, [ls[c] for c in keep], [ps[c] for c in keep], [g[c] for c in keep]))
+            row = _combine(method, [ls[c] for c in keep], [ps[c] for c in keep], [g[c] for c in keep])
+            loo.append(row if row is not None and all(math.isfinite(x) for x in row) else None)
     return {"probs": probs, "weights": _normalized(g), "agree": agree, "spread": spread, "leave_one_out": loo}
 
 

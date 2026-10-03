@@ -269,7 +269,6 @@ class Council:
         self.tab_seq = itertools.count(1)
         self.dec_seq = itertools.count(1)
         self.stop_flag = threading.Event()
-        self.asking = False
 
     # --- events -------------------------------------------------------------------
 
@@ -398,6 +397,7 @@ class Council:
                 raise RuntimeError(f"uploading {f} answered {status}")
             ids[f] = entry["id"]
         menu = {e["id"]: e for e in self.daemon.get("/v1/opinion/specs")}
+        specs = {}
         for f, sid in ids.items():
             entry = menu.get(sid)
             if entry is None:
@@ -408,9 +408,11 @@ class Council:
             q = choices[-1]
             if len(entry["fields"][q]["options"]) < 2:
                 raise RuntimeError(f"{f}: field {entry['fields'][q]['field']!r} has fewer than two options")
-            self.specs[f] = {"file": f, "id": sid, "field": entry["fields"][q]["field"],
-                             "options": list(entry["fields"][q]["options"]), "input_label": entry["input_label"],
-                             "describe": [x["field"] for x in entry["fields"][:q]]}
+            specs[f] = {"file": f, "id": sid, "field": entry["fields"][q]["field"],
+                        "options": list(entry["fields"][q]["options"]), "input_label": entry["input_label"],
+                        "describe": [x["field"] for x in entry["fields"][:q]]}
+        with self.lock:
+            self.specs = specs
 
     # --- tabs ---------------------------------------------------------------------
 
@@ -621,11 +623,21 @@ class Council:
         self.stop_flag.set()
 
     def do_ask(self, tid: str, text: str) -> dict:
-        tab = self.tab(tid)
-        if len(tab["messages"]) + 2 > MAX_MESSAGES:
-            raise Refused(f"tab {tab['name']!r} is full ({MAX_MESSAGES} messages)")
-        route = self.ask_route(tab)
-        self.stop_flag.clear()
+        """An ask has no waiter (the request was answered 202), so every way it ends tells the page: ask_done, or
+        aborted with why, including a refusal before anything streamed."""
+        try:
+            tab = self.tab(tid)
+            if len(tab["messages"]) + 2 > MAX_MESSAGES:
+                raise Refused(f"tab {tab['name']!r} is full ({MAX_MESSAGES} messages)")
+            route = self.ask_route(tab)
+            if self.stop_flag.is_set():
+                raise RuntimeError("stopped before it started; the question was dropped")
+        except BaseException as e:
+            self.emit({"type": "aborted", "tab": tid, "reason": str(e)})
+            raise
+        return self.ask_in(tab, tid, text, route)
+
+    def ask_in(self, tab: dict, tid: str, text: str, route: dict) -> dict:
         body = {**route, "messages": route["messages"] + [{"role": "user", "content": text}],
                 "max_tokens": ASK_TOKENS, "timeout_ms": ASK_TIMEOUT_MS, "stream": True}
         with self.lock:
@@ -634,7 +646,6 @@ class Council:
         self.emit({"type": "tab", "tab": self.tab_view(tab)})
         self.set_status("thinking", tab["name"])
         done, t0 = None, time.perf_counter()
-        self.asking = True
         try:
             try:
                 for name, data in self.daemon.stream("/v1/chat", body, self.stop_flag):
@@ -673,8 +684,6 @@ class Council:
             self.emit({"type": "tab", "tab": self.tab_view(tab)})
             self.emit({"type": "aborted", "tab": tid, "reason": str(e)})
             raise
-        finally:
-            self.asking = False
         s = time.perf_counter() - t0
         self.emit({"type": "tab", "tab": self.tab_view(tab)})
         self.retire(old)
@@ -704,29 +713,31 @@ class Council:
         return r, (time.perf_counter() - t0) * 1000
 
     def read_one(self, action: str, tabs: list[dict]) -> dict:
-        """One /v1/opinion across these tabs for this action; on a 404 for a lost context or spec, pin or upload
-        again and retry once."""
-        spec = self.specs[self.spec]
-        ids = [t["context"] for t in tabs]
-        try:
-            r, wall = self.opinion(spec, action, ids)
-        except ApiError as e:
-            if e.status == 400:
-                raise _refused_by_daemon(e, "the action") from None
-            if e.status != 404:
-                raise
-            if any(g in e.message for g in GONE):
-                self.repin_all()
-            elif "no loaded spec" in e.message:
-                self.upload_specs()
-                spec = self.specs[self.spec]
-                self.emit({"type": "repinned", "tabs": 0,
-                           "message": "the daemon no longer held the specs (a restart?): uploaded them again"})
-            else:
-                raise
+        """One /v1/opinion across these tabs for this action. A 404 for a lost spec uploads the specs again, one for
+        a lost context pins every tab again, each at most once: a restart loses both, and the daemon names the spec
+        first, so a read after a restart can need both before it answers."""
+        recovered = set()
+        while True:
+            spec = self.specs[self.spec]
             ids = [t["context"] for t in tabs]
-            r, wall = self.opinion(spec, action, ids)
-        return self.record(r, wall, spec, tabs, ids)
+            try:
+                r, wall = self.opinion(spec, action, ids)
+                return self.record(r, wall, spec, tabs, ids)
+            except ApiError as e:
+                if e.status == 400:
+                    raise _refused_by_daemon(e, "the action") from None
+                if e.status != 404:
+                    raise
+                if any(g in e.message for g in GONE) and "contexts" not in recovered:
+                    recovered.add("contexts")
+                    self.repin_all()
+                elif "no loaded spec" in e.message and "specs" not in recovered:
+                    recovered.add("specs")
+                    self.upload_specs()
+                    self.emit({"type": "repinned", "tabs": 0,
+                               "message": "the daemon no longer held the specs (a restart?): uploaded them again"})
+                else:
+                    raise
 
     def record(self, r: dict, wall: float, spec: dict, tabs: list[dict], ids: list[str]) -> dict:
         """The stored read: each context's raw numbers, checked against the daemon's pool."""
@@ -746,6 +757,7 @@ class Council:
             per.append({"tab": t["id"], "name": t["name"], "color": t["color"], "logprobs": logprobs, "mass": mass,
                         "probs": probs, "verdict": options[council_pool.argmax(probs)],
                         "described": x.get("described", []), "cache": x.get("cache"),
+                        "context_tokens": x.get("context_tokens"),
                         "prompt_tokens": x.get("prompt_tokens"), "cached_tokens": x.get("cached_tokens"),
                         "described_tokens": x.get("described_tokens"),
                         "ms": {k: x.get(k) for k in ("prefill_ms", "describe_ms", "read_ms")}})
@@ -772,9 +784,16 @@ class Council:
         m, w = self.pool["method"], self.pool["weights"]
         pooled = council_pool.pool(lg, ms, m, w)
         read["pool"] = dict(self.pool)
-        read["pooled"] = {"probs": pooled["probs"], "agree": pooled["agree"], "spread": pooled["spread"],
+        read["pooled"] = {"probs": pooled["probs"], "weights": pooled["weights"], "agree": pooled["agree"],
+                          "spread": pooled["spread"],
                           "verdict": options[council_pool.argmax(pooled["probs"])]}
-        read["stars"] = {k: council_pool.pool(lg, ms, k, w)["probs"] for k in council_pool.METHODS}
+        read["stars"] = {m: pooled["probs"]}
+        for k in council_pool.METHODS:
+            if k != m:
+                try:  # the method not asked can be undefined where the asked one is not (log-linear, all vetoed)
+                    read["stars"][k] = council_pool.pool(lg, ms, k, w)["probs"]
+                except ValueError:
+                    read["stars"][k] = None
         read["loo"] = [{"tab": p["tab"], "probs": x,
                         "verdict": None if x is None else options[council_pool.argmax(x)]}
                        for p, x in zip(read["per"], pooled["leave_one_out"])]
@@ -1038,6 +1057,7 @@ class Council:
             if len(tab["messages"]) + 2 > MAX_MESSAGES:
                 raise Refused(f"tab {tab['name']!r} is full ({MAX_MESSAGES} messages)")
             self.ask_route(tab)  # a tab whose reply can't be continued is a 400 now
+            self.stop_flag.clear()  # a stop from here on stops this ask, queued or streaming
             job = self.submit("ask", tid=tid, text=text)
             if job.error is not None:
                 raise job.error

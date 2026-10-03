@@ -90,6 +90,8 @@ def rust_pool(logprobs, mass, method, weights):
         mx = -math.inf
         for x in acc:
             mx = max(mx, x)
+        if mx == -math.inf:
+            return [math.nan] * k
         e = [math.exp(x - mx) for x in acc]
         t = sum_in_order(e)
         return [x / t for x in e]
@@ -106,8 +108,11 @@ def rust_pool(logprobs, mass, method, weights):
         for p in ps[1:]:
             hi, lo = max(hi, p[o]), min(lo, p[o])
         spread = max(spread, hi - lo)
-    loo = [] if n < 2 else [combine([ls[c] for c in range(n) if c != d], [ps[c] for c in range(n) if c != d],
-                                    [g[c] for c in range(n) if c != d]) for d in range(n)]
+    loo = []
+    for d in range(n if n >= 2 else 0):
+        row = combine([ls[c] for c in range(n) if c != d], [ps[c] for c in range(n) if c != d],
+                      [g[c] for c in range(n) if c != d])
+        loo.append(row if row is not None and all(math.isfinite(x) for x in row) else None)
     total = sum_in_order(g)
     return {"probs": probs, "weights": [x / total for x in g], "agree": all(top(p) == first for p in ps),
             "spread": spread, "leave_one_out": loo}
@@ -227,7 +232,7 @@ def make_fake(state):
                         "sequence_mass": f32_json(sm), "first_token_mass": f32_json(sm), "shared_tokens": 9,
                         "scored_tokens": 3, "rendered_sha256": "0" * 64, "margin": 0.5}],
                     "cache": {"prefix": "checkpoint", "state": "miss", "described": "miss"},
-                    "prompt_tokens": 100, "cached_tokens": 90, "described_tokens": 0, "queue_ms": 0.1,
+                    "context_tokens": len(ctx["text"]) // 4, "prompt_tokens": 100, "cached_tokens": 90, "described_tokens": 0, "queue_ms": 0.1,
                     "prefill_ms": 1.0, "describe_ms": 0.0, "read_ms": 2.0})
             pool = {"method": "linear", "weights": "uniform", **(b.get("pool") or {})}
             lps = [[f32(o["logprob"]) for o in r["answers"][0]["options"]] for r in reads]
@@ -540,6 +545,8 @@ class DecisionTests(CouncilTest):
         self.assertEqual([x["tab"] for x in r["loo"]], [p["tab"] for p in r["per"]])
         # without the Session's report the other two agree on allow
         self.assertEqual(r["loo"][2]["verdict"], "allow")
+        self.assertEqual(r["pooled"]["weights"], want["weights"])
+        self.assertTrue(all(isinstance(p["context_tokens"], int) and p["context_tokens"] > 0 for p in r["per"]))
         # the stored numbers are the f32s the daemon sent, widened, not their decimals
         self.assertTrue(all(council_pool.f32(v) == v for v in lg[0]))
 
@@ -742,6 +749,24 @@ class ReplayAndAskTests(CouncilTest):
         self.assertEqual(status, 400)
         self.assertIn("never takes a reply back as text", out["error"]["message"])
 
+    def test_an_ask_that_ends_before_streaming_still_tells_the_page(self):
+        cr = self.cr
+        mem = cr.tab("Memory")
+        for tid, stop, why in ((mem["id"], True, "stopped before it started"), ("t999", False, "no tab")):
+            with self.subTest(why=why):
+                if stop:
+                    cr.council.stop()
+                e0, m = cr.mark(), cr.calls_mark()
+                cr.council.submit("ask", tid=tid, text="q")
+                ab = cr.wait("aborted", after=e0)
+                cr.idle()
+                self.assertIn(why, ab["reason"])
+                self.assertEqual([p for _, p, _ in cr.state.calls[m:] if p == "/v1/chat"], [])
+        self.assertEqual(cr.tab("Memory")["messages"], mem["messages"])
+        # a stop left over from before is cleared when the next ask is queued
+        cr.post(f"/tabs/{mem['id']}/ask", {"text": "q"}, expect=202)
+        cr.wait("ask_done")
+
     def test_an_ask_whose_chat_the_daemon_lost_is_dropped_and_says_so(self):
         cr = self.cr
         mem = cr.tab("Memory")
@@ -775,6 +800,16 @@ class RestartTests(CouncilTest):
         self.assertEqual({t["name"]: t["context"] for t in cr.state_()["tabs"]}, before)
         self.assertEqual(got["read"]["pooled"], first["read"]["pooled"])
         self.assertEqual(cr.of("error", e0), [])
+
+    def test_a_restart_loses_specs_and_contexts_and_one_read_recovers_both(self):
+        cr = self.cr
+        cr.state.specs.clear()
+        cr.state.contexts.clear()
+        e0 = cr.mark()
+        got = cr.post("/decide", {"action": "make test"})
+        self.assertEqual((len(cr.state.specs), cr.state.pinned()), (2, 3))
+        self.assertEqual(len(got["read"]["per"]), 3)
+        self.assertEqual(len(cr.of("repinned", e0)), 2)
 
     def test_a_daemon_that_lost_the_specs_gets_them_uploaded_again(self):
         cr = self.cr

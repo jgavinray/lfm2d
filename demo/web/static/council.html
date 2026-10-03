@@ -534,8 +534,8 @@ function ternary(d) {
     const right = a.xy[0] < ctr[0];
     const t = svgEl("text", { x: a.xy[0] + (right ? 12 : -12), y: a.xy[1] - 9, "text-anchor": right ? "start" : "end", fill: col, "font-size": 13, "font-weight": 700 }); t.textContent = a.p.name; svg.append(t);
   }
-  const o = at(r.stars[r.pool.method === "linear" ? "loglinear" : "linear"]);
-  svg.append(star(o[0], o[1], 10, { fill: "none", stroke: "#ffffff", "stroke-width": 1.5, "stroke-opacity": .8 }));
+  const other = r.stars[r.pool.method === "linear" ? "loglinear" : "linear"];
+  if (other) { const o = at(other); svg.append(star(o[0], o[1], 10, { fill: "none", stroke: "#ffffff", "stroke-width": 1.5, "stroke-opacity": .8 })); }
   svg.append(star(active[0], active[1], 13, { fill: vhex(r.pooled.verdict), stroke: "#05060a", "stroke-width": 1.5 }));
   return svg;
 }
@@ -602,6 +602,11 @@ function renderDetail() {
     const m = el("span", "mass" + (low ? " low" : ""), (low ? "⚠ " : "") + `mass ${pct(p.mass)}`);
     m.title = low ? "low raw mass: this context put little probability on the options at all, so its odds are noise that looks like an answer" : "the options' share of the full vocabulary: was the question really put?";
     row.append(el("span", "who", p.name), barEl(p.probs, names), m);
+    // the context's length and the weight it pooled with: a near-empty or zero-weight context shows here
+    const w = r.pooled.weights ? r.pooled.weights[r.per.indexOf(p)] : null;
+    const ctl = el("div", "desc" + (w === 0 ? " lowmass" : ""), [p.context_tokens != null ? `${p.context_tokens.toLocaleString()} tokens held` : null,
+      w != null ? `pooled at weight ${w === 0 ? "0: did not count" : w.toFixed(3)}` : null].filter(Boolean).join(" · "));
+    if (ctl.textContent) row.append(ctl);
     for (const x of p.described || []) { const dd = el("div", "desc"); dd.append(el("b", "", x.field), document.createTextNode(typeof x.value === "string" ? x.value : JSON.stringify(x.value))); row.append(dd); }
     bars.append(row);
   }

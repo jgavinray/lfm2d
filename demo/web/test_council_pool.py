@@ -175,6 +175,10 @@ class PoolTests(unittest.TestCase):
             pool.pool([[0.0, 1.0]], [1.0], "max", "uniform")
         with self.assertRaisesRegex(ValueError, "ruled out"):
             pool.pool([[0.0, -math.inf], [-math.inf, 0.0]], [1.0, 1.0], "loglinear", "uniform")
+        # a log-linear pool that rules every option out is no distribution (pool.rs's NaN row, left null in a
+        # leave-one-out; a subset can veto no more than the whole, so only the whole can reach it)
+        lp = [pool.log_normalize(r) for r in ([0.0, -math.inf], [-math.inf, 0.0])]
+        self.assertTrue(all(math.isnan(x) for x in pool._combine("loglinear", lp, lp, [1.0, 1.0])))
         with self.assertRaisesRegex(ValueError, "sum to 0"):
             pool.pool([[0.0, 1.0]] * 2, [0.0, 0.0], "linear", "mass")
 
