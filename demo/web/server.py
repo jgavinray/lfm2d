@@ -11,6 +11,10 @@ only the routes in ALLOWED. Request bodies are never logged.
 A server-sent-event answer (`/v1/chat` with `stream: true`) is relayed as it
 arrives, and a browser that hangs up hangs up the upstream: the daemon cancels
 a chat turn when its client goes, and this proxy is that client.
+
+The council (`/council`, council.py) keeps its state here rather than in the
+page, so its routes are `/council/api/*`, answered by that module, which calls
+the daemon itself. It starts on the first request there.
 """
 import argparse
 import http.client
@@ -23,6 +27,8 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import council
 
 STATIC = Path(__file__).resolve().parent / "static"
 MAX_BODY = 1 << 20
@@ -60,6 +66,7 @@ def resolve_host(host, run=subprocess.run):
 
 def make_server(host, port, upstream):
     upstream = upstream.rstrip("/")
+    board = council.Council(council.Daemon(upstream))
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -145,14 +152,20 @@ def make_server(host, port, upstream):
         def do_GET(self):
             if self.path.startswith("/api/"):
                 return self.proxy()
+            if self.path.startswith("/council/api/"):
+                return board.handle(self, "GET")
             self.static()
 
         def do_POST(self):
             if self.path.startswith("/api/"):
                 return self.proxy()
+            if self.path.startswith("/council/api/"):
+                return board.handle(self, "POST")
             self.error(404, "not found")
 
-    return ThreadingHTTPServer((host, port), Handler)
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd.council = board
+    return httpd
 
 
 def main():
