@@ -83,7 +83,7 @@ class PoolTests(unittest.TestCase):
                         self.close(got["probs"], q)
                         self.assertIs(got["agree"], agree)
                         self.assertLessEqual(abs(got["spread"] - spread), 1e-15 + RTOL * spread)
-                        self.assertEqual(set(got), {"probs", "agree", "spread", "leave_one_out"})
+                        self.assertEqual(set(got), {"probs", "weights", "agree", "spread", "leave_one_out"})
 
     def test_leave_one_out_is_the_pool_without_each_context(self):
         L = cases()[4]  # 3 contexts
@@ -99,6 +99,9 @@ class PoolTests(unittest.TestCase):
         zero = pool.pool(L[:2], [1.0] * 2, "linear", [1.0, 0.0])
         self.assertIsNone(zero["leave_one_out"][0], "dropping the only weighted context leaves nothing to pool")
         self.assertEqual(pool.pool(L[:1], [1.0], "linear", "uniform")["leave_one_out"], [])
+        self.assertEqual(zero["weights"], [1.0, 0.0], "the zero shows the context that did not count")
+        self.assertEqual(pool.pool(L[:2], [0.75, 0.25], "linear", "mass")["weights"], [0.75, 0.25])
+        self.assertEqual(pool.pool(L[:2], [0.75, 0.25], "linear", "uniform")["weights"], [0.5, 0.5])
 
     def test_zero_weight_contexts_do_not_move_the_result(self):
         L = cases()[6]  # 8 contexts
@@ -170,6 +173,8 @@ class PoolTests(unittest.TestCase):
                 pool.pool([[0.0, 1.0]] * 2, [1.0, 1.0], "linear", bad)
         with self.assertRaisesRegex(ValueError, "method"):
             pool.pool([[0.0, 1.0]], [1.0], "max", "uniform")
+        with self.assertRaisesRegex(ValueError, "ruled out"):
+            pool.pool([[0.0, -math.inf], [-math.inf, 0.0]], [1.0, 1.0], "loglinear", "uniform")
         with self.assertRaisesRegex(ValueError, "sum to 0"):
             pool.pool([[0.0, 1.0]] * 2, [0.0, 0.0], "linear", "mass")
 

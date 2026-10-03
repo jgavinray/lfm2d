@@ -18,6 +18,7 @@ number back to the f32 it was before anything here uses it.
 - weights: "uniform", "mass" or one weight per context; normalized to sum to 1.
 - agree: every context's top option is the same (ties go to the earlier option). Per context, never from the pool.
 - spread: max over options of (max_c p - min_c p).
+- weights: the normalized weight each context pooled with, in request order (a 0 did not count).
 - leave_one_out[c]: the pooled probabilities without context c (empty for one context; None where the remaining
   weights sum to 0).
 
@@ -118,7 +119,7 @@ def check_weights(weights, n: int) -> None:
 
 def pool(logprobs: list[list[float]], mass: list[float], method: str, weights) -> dict:
     """One question pooled over its contexts: `logprobs[c]` and `mass[c]` are context c's, in request order. Returns
-    {probs, agree, spread, leave_one_out}, the daemon's `pooled` entry less its field and options."""
+    {probs, weights, agree, spread, leave_one_out}, the daemon's `pooled` entry less its field and options."""
     n = len(logprobs)
     if n == 0 or len(mass) != n:
         raise ValueError(f"{n} option rows and {len(mass)} masses: need one of each per context, at least one")
@@ -144,6 +145,8 @@ def pool(logprobs: list[list[float]], mass: list[float], method: str, weights) -
     probs = _combine(method, ls, ps, g)
     if probs is None:
         raise ValueError("the weights sum to 0 (every context's mass underflowed?): nothing to pool")
+    if not all(math.isfinite(p) for p in probs):
+        raise ValueError("every option is ruled out by some weighted context: a log-linear pool has nothing left")
     first = argmax(ps[0])
     agree = all(argmax(p) == first for p in ps)
     spread = 0.0
@@ -158,7 +161,7 @@ def pool(logprobs: list[list[float]], mass: list[float], method: str, weights) -
         for drop in range(n):
             keep = [c for c in range(n) if c != drop]
             loo.append(_combine(method, [ls[c] for c in keep], [ps[c] for c in keep], [g[c] for c in keep]))
-    return {"probs": probs, "agree": agree, "spread": spread, "leave_one_out": loo}
+    return {"probs": probs, "weights": _normalized(g), "agree": agree, "spread": spread, "leave_one_out": loo}
 
 
 def option_probs(logprobs: list[float]) -> list[float]:

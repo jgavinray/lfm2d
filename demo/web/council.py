@@ -109,6 +109,7 @@ TRUST = ("An action is the read's input, rendered after each context. The daemon
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 # A read naming a context the daemon no longer holds (a 404 that says so; since f6a10a6 "no chat checkpoint or
 # held context", earlier "no held context").
+POOLED_KEYS = ("probs", "agree", "spread", "leave_one_out", "weights")
 GONE = ("no chat checkpoint or held context", "no held context", "no chat checkpoint")
 
 
@@ -755,8 +756,9 @@ class Council:
             raise RuntimeError(f"/v1/opinion pooled under {r['pool']}, asked {self.pool}")
         mine = council_pool.pool([p["logprobs"] for p in per], [p["mass"] for p in per], self.pool["method"],
                                  self.pool["weights"])
-        theirs = {k: pooled[0][k] for k in ("probs", "agree", "spread", "leave_one_out")}
-        if mine != theirs:
+        # every number the daemon pooled must be ours to the bit (`weights` since the daemon added it)
+        theirs = {k: pooled[0][k] for k in POOLED_KEYS if k in pooled[0]}
+        if not set(POOLED_KEYS[:4]) <= set(theirs) or {k: mine[k] for k in theirs} != theirs:
             raise RuntimeError(f"the daemon pooled {theirs}; council_pool.py gives {mine} from the same reads: the "
                                f"pooling is not the one this page explains")
         read = {"spec": spec["file"], "spec_id": spec["id"], "field": field, "options": options,

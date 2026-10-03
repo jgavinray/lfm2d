@@ -108,7 +108,9 @@ def rust_pool(logprobs, mass, method, weights):
         spread = max(spread, hi - lo)
     loo = [] if n < 2 else [combine([ls[c] for c in range(n) if c != d], [ps[c] for c in range(n) if c != d],
                                     [g[c] for c in range(n) if c != d]) for d in range(n)]
-    return {"probs": probs, "agree": all(top(p) == first for p in ps), "spread": spread, "leave_one_out": loo}
+    total = sum_in_order(g)
+    return {"probs": probs, "weights": [x / total for x in g], "agree": all(top(p) == first for p in ps),
+            "spread": spread, "leave_one_out": loo}
 
 
 class FakeState:
@@ -232,7 +234,8 @@ def make_fake(state):
             mass = [math.exp(f32(r["answers"][0]["sequence_mass"])) for r in reads]
             pooled = rust_pool(lps, mass, pool["method"], pool["weights"])
             if state.perturb_pool:
-                pooled["probs"][0] = math.nextafter(pooled["probs"][0], 1.0)
+                key = state.perturb_pool if isinstance(state.perturb_pool, str) else "probs"
+                pooled[key][0] = math.nextafter(pooled[key][0], 1.0)
             self.reply(200, {"spec": b["spec"], "contexts": ids, "reads": reads,
                              "pooled": [{"field": field, "options": options, **pooled}], "pool": pool, "queue_ms": 0.1})
 
@@ -553,11 +556,14 @@ class DecisionTests(CouncilTest):
 
     def test_a_daemon_pool_that_differs_by_one_ulp_fails_the_read_loudly(self):
         cr = self.cr
-        cr.state.perturb_pool = True
-        status, out = cr.http("/council/api/decide", {"action": "ls"})
-        self.assertEqual(status, 500)
-        self.assertIn("not the one this page explains", out["error"]["message"])
-        self.assertEqual(cr.state_()["decisions"], [])
+        for key in ("probs", "weights"):
+            with self.subTest(key=key):
+                cr.state.perturb_pool = key
+                status, out = cr.http("/council/api/decide", {"action": "ls"})
+                self.assertEqual(status, 500)
+                self.assertIn("not the one this page explains", out["error"]["message"])
+                self.assertEqual(cr.state_()["decisions"], [])
+                cr.idle()
 
     def test_a_decision_with_no_included_tab_is_400(self):
         cr = self.cr
