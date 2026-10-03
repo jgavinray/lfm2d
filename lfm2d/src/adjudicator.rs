@@ -2669,13 +2669,14 @@ impl Adjudicator {
             let mut covered = 0;
             for k in (1..segments.len()).rev() {
                 let end: usize = segments[..k].iter().map(Vec::len).sum();
-                if let Some(held) = self.chats.peek(&checkpoint_id(&ids[..end])) {
+                if let Some(held) = self.chats.peek(&checkpoint_id(&ids[..end])).filter(|h| h.canonical) {
                     base = Some(held.clone());
                     covered = k;
                     break;
                 }
             }
             let (mut state, cached, inherited) = match &base {
+                Some(b) if !b.canonical => unreachable!("only canonical bases are chosen"),
                 Some(b) => (
                     b.state.clone(),
                     b.ids.len(),
@@ -2694,6 +2695,7 @@ impl Adjudicator {
                 ids: ids.clone(),
                 text,
                 state,
+                canonical: true,
                 read_specs: std::sync::Mutex::new(inherited),
             });
             self.hold_checkpoint(id.clone(), held)?;
@@ -2800,6 +2802,8 @@ impl Adjudicator {
                     ids: ids.clone(),
                     text: text.clone(),
                     state,
+                    // Prefilled from a canonical base, or from nothing.
+                    canonical: base.as_ref().is_none_or(|b| b.canonical),
                     read_specs: std::sync::Mutex::new(inherited),
                 });
                 // Complete: readers may fork it from here on, while the
@@ -2897,6 +2901,7 @@ impl Adjudicator {
                 id.clone(),
                 Arc::new(ChatCheckpoint {
                     kind: CheckpointKind::ChatTurn,
+                    canonical: false,
                     ids: all,
                     text: format!(
                         "{}{}{generated_text}{}",

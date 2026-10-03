@@ -123,6 +123,43 @@ fn held_contexts_and_multi_context_reads_on_the_real_model() {
         other => panic!("a chat from a context: {:?}", other.map(|r| r.text)),
     }
 
+    // 4b. A generated turn is never a base: its tokens were decoded one at a
+    // time, a different computation from a context's prefill. A context that
+    // re-renders a chat's reply and adds a turn forwards from the chat's
+    // user checkpoint at most, never from its assistant checkpoint.
+    let started: lfm2d::chat_session::ChatRequest = serde_json::from_value(json!({
+        "system": SYSTEM, "messages": turns(1).as_array().unwrap()[..1], "max_tokens": 256
+    }))
+    .unwrap();
+    let turn = a.chat(&started, &|_| {}, &|| Ok(())).expect("a chat turn");
+    assert_eq!(turn.finish_reason, "stop", "{:?}", turn.text);
+    let replayed = build(
+        &mut a,
+        &context(
+            json!([
+                turns(1)[0],
+                {"role": "assistant", "thinking": turn.thinking, "content": turn.content},
+                {"role": "user", "content": "And the next one?"}
+            ]),
+            None,
+        ),
+    );
+    let user_tokens = a.chat_checkpoint_ids(&turn.checkpoint_user).unwrap().len();
+    let assistant = turn.checkpoint.clone().expect("a finished turn leaves a checkpoint");
+    let assistant_tokens = a.chat_checkpoint_ids(&assistant).unwrap().len();
+    eprintln!(
+        "replayed reply: cached {} of {} (user checkpoint {user_tokens}, assistant {assistant_tokens})",
+        replayed.cached_tokens, replayed.n_tokens
+    );
+    // The hazard is real only when the re-rendered reply tokenizes as it
+    // was generated; on this checkpoint it does, so the check can fail.
+    let replayed_ids = a.chat_checkpoint_ids(&replayed.id).unwrap();
+    assert!(
+        replayed_ids.starts_with(&a.chat_checkpoint_ids(&assistant).unwrap()),
+        "the context does not extend the assistant checkpoint, so this check is vacuous"
+    );
+    assert!(replayed.cached_tokens <= user_tokens, "forwarded from a decoded checkpoint");
+
     // 5. Deleted, then built whole: the same id, the same state.
     assert!(a.context_delete(&long.id).unwrap().deleted);
     assert!(a.context_delete(&short.id).unwrap().deleted);

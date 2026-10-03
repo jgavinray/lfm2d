@@ -87,6 +87,14 @@ pub(crate) struct ChatCheckpoint {
     pub(crate) ids: Vec<u32>,
     pub(crate) text: String,
     pub(crate) state: candle_transformers::models::quantized_lfm2_moe::State,
+    /// Every token of `ids` was prefilled under the canonical schedule (each
+    /// segment chunked from its own start). An assistant checkpoint is not:
+    /// its generated tokens were decoded one at a time, which is a different
+    /// computation on this engine (block size picks the kernel), and so is
+    /// any checkpoint built on one. Only a canonical checkpoint is a base a
+    /// context build may forward from: the state it reaches must be the one
+    /// a whole build reaches.
+    pub(crate) canonical: bool,
     /// The ids of the specs this chat has been tail-read with, on this
     /// checkpoint or one before it in the chain: the checkpoints a turn
     /// leaves inherit them, and get those specs' tail prefixes filled: a
