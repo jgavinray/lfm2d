@@ -904,6 +904,14 @@ coverage weight is not built into the daemon; a coverage question asked of a
 context reads like the verdict did, by source. Same family as
 `life-decision-v1`'s hedge on a described field.
 
+**Decision (Amy, 2026-10-03): no coverage gating.** "take the coverage out.
+probably best to just ask them all and let them express confidence via the
+probabilities." Every context is asked; its confidence is its probabilities,
+and the pool (log-linear lets a confident context dominate, linear does not)
+is where it counts. Caveat from the same runs: the probabilities did not yet
+carry much "I don't know" (Memory asked on `cat` at 0.93-0.98), so read the
+per-context reads beside the pool.
+
 ## Probe and tokenize
 
 Ruled 2026-09-23, `docs/system1-split-plan.md` (git f9ca081) "Tokenize and probe
