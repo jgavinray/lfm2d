@@ -67,6 +67,10 @@ pub enum CheckpointKind {
     /// Ends at a chat turn boundary (`<|im_end|>\n`): a chat continues from
     /// it and a read forks it.
     ChatTurn,
+    /// A held context (`POST /v1/contexts`, [`crate::contexts_api`]): ends at
+    /// a turn boundary too, and may hold assistant turns this daemon never
+    /// generated, so a read forks it but no chat continues from it.
+    Context,
 }
 
 /// The chat checkpoints' store: [`crate::state_store::StateStore`], by

@@ -52,6 +52,10 @@ impl<T> StateStore<T> {
     pub(crate) fn pinned_bytes(&self) -> usize {
         self.entries.iter().filter(|e| e.pinned).map(|e| e.bytes).sum()
     }
+    /// What `id` is charged; `None` when it is not held.
+    pub(crate) fn bytes_of(&self, id: &str) -> Option<usize> {
+        self.entries.iter().find(|e| e.id == id).map(|e| e.bytes)
+    }
     /// Whether `id` is held pinned; `None` when it is not held.
     pub(crate) fn is_pinned(&self, id: &str) -> Option<bool> {
         self.entries.iter().find(|e| e.id == id).map(|e| e.pinned)
