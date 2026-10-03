@@ -826,18 +826,25 @@ pool. The contract is `docs/integration.md` invariants 18 and 19. The code is
 `lfm2d/src/contexts_api.rs` (wire types), `Adjudicator::build_context`,
 `Generator::opine_contexts` (the loop) and `lfm2d/src/pool.rs` (the math).
 
-- **A context is a checkpoint of its own kind.** `POST /v1/contexts` renders
-  and encodes each turn alone, as a chat turn does, so a context's ids and
-  state are the ones a chat with the same turns would hold, and the id is
-  the same sha256. `CheckpointKind::Context` lets a tail read fork it and
-  stops `/v1/chat` from continuing it: a context may carry assistant turns
-  this daemon never generated (an agent session's transcript), and
-  invariant 16 is about chats.
-- **A build forwards from the longest held prefix ending at a turn.** Under
-  the canonical schedule (each segment chunked from its own start), that
-  state is the whole build's, so adding a message to a tab forwards one
-  message. `contexts_real` checks it through a read after each build, bit
-  for bit.
+- **A context is a checkpoint of its own kind and its own id.** `POST
+  /v1/contexts` renders and encodes each turn alone, as a chat turn does.
+  `CheckpointKind::Context` lets a tail read fork it and stops `/v1/chat`
+  from continuing it: a context may carry assistant turns this daemon never
+  generated (an agent session's transcript), and invariant 16 is about
+  chats. Its id is `context_id`, the sha256 of a domain tag and the ids,
+  never the chat checkpoint id of the same ids: a chat's generated tokens
+  were decoded one at a time, a context's are prefilled, and on this engine
+  those are different numbers (block size picks the kernel). The first cut
+  shared the id; the store keeps the first value under an id, so a context
+  re-rendering a chat's reply forwarded from the decoded state, and a
+  context could shadow a later chat checkpoint (kaibo review, 2026-10-03).
+  `contexts_real` reproduces the first on the real 8B: the replayed reply's
+  286 tokens are exactly the assistant checkpoint's.
+- **A build forwards from the longest held context that is a prefix ending
+  at a turn.** Under the canonical schedule (each segment chunked from its
+  own start), that state is the whole build's, so adding a message to a tab
+  forwards one message. `contexts_real` checks it through a read after each
+  build, bit for bit.
 - **Pins** live in `StateStore`: eviction and group caps pass over them,
   they may hold half the checkpoint budget, and an insert that could only
   fit by evicting a pin is refused before anything goes (`507`).

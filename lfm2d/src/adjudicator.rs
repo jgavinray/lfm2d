@@ -2456,22 +2456,25 @@ impl Generator for Adjudicator {
     }
 
     fn context_info(&mut self, id: &str) -> Result<crate::contexts_api::ContextInfo, Failure> {
-        let held = self.chats.peek(id).ok_or_else(|| unknown_context(id))?;
+        let held = self
+            .chats
+            .peek(id)
+            .filter(|h| h.kind == crate::chat_session::CheckpointKind::Context)
+            .ok_or_else(|| unknown_context(id))?;
         Ok(crate::contexts_api::ContextInfo {
             id: id.to_owned(),
             n_tokens: held.ids.len(),
             pinned: self.chats.is_pinned(id).unwrap_or(false),
             bytes: self.chats.bytes_of(id).unwrap_or(0),
-            kind: match held.kind {
-                crate::chat_session::CheckpointKind::ChatTurn => "chat",
-                crate::chat_session::CheckpointKind::Context => "context",
-            }
-            .into(),
         })
     }
 
     fn context_delete(&mut self, id: &str) -> Result<crate::contexts_api::ContextDeleted, Failure> {
-        self.chats.remove(id).ok_or_else(|| unknown_context(id))?;
+        // Contexts only: a chat checkpoint's id is not a context's.
+        if self.chats.peek(id).is_none_or(|h| h.kind != crate::chat_session::CheckpointKind::Context) {
+            return Err(unknown_context(id));
+        }
+        self.chats.remove(id);
         // What a deleted checkpoint leaves, as for an evicted one: its tail
         // prefixes and its queued prefills.
         self.states.forget_checkpoint(id);
@@ -2527,6 +2530,16 @@ fn unknown_context(id: &str) -> Failure {
         "no held context {id:?}: it was deleted, evicted (least recently used, under \
          --chat-checkpoint-budget-mib), lost to a restart, or never made by this daemon; \
          build it again from its content"
+    ))
+}
+
+/// A read's context naming nothing held: a chat checkpoint or a held context
+/// (the daemon cannot tell which an unknown id was), each with its remedy.
+fn unknown_read_context(id: &str) -> Failure {
+    Failure::NotFound(format!(
+        "no chat checkpoint or held context {id:?}: it was evicted (least recently used, under \
+         --chat-checkpoint-budget-mib), deleted, lost to a restart, or never made by this daemon; \
+         start the chat again, or build the context again from its content"
     ))
 }
 
@@ -2633,7 +2646,7 @@ impl Adjudicator {
         request: &crate::contexts_api::ContextRequest,
         at: &dyn YieldPoint<Self>,
     ) -> Result<crate::contexts_api::ContextCreated, Failure> {
-        use crate::chat_session::{ChatCheckpoint, CheckpointKind, checkpoint_id};
+        use crate::chat_session::{ChatCheckpoint, CheckpointKind, context_id};
         at.check()?;
         let begin = Instant::now();
         let mut texts = Vec::with_capacity(request.messages.len() + 1);
@@ -2660,23 +2673,25 @@ impl Adjudicator {
                 self.context_limit
             )));
         }
-        let id = checkpoint_id(&ids);
-        let cached_tokens = if self.chats.get(&id).is_some() {
+        let id = context_id(&ids);
+        let fresh = self.chats.get(&id).is_none();
+        let cached_tokens = if !fresh {
             ids.len()
         } else {
-            // The longest held prefix that ends at a turn, short of the whole.
+            // The longest held context that is a prefix ending at a turn,
+            // short of the whole. Only contexts: a chat checkpoint of the
+            // same ids may hold decoded tokens, another computation.
             let mut base = None;
             let mut covered = 0;
             for k in (1..segments.len()).rev() {
                 let end: usize = segments[..k].iter().map(Vec::len).sum();
-                if let Some(held) = self.chats.peek(&checkpoint_id(&ids[..end])).filter(|h| h.canonical) {
+                if let Some(held) = self.chats.peek(&context_id(&ids[..end])) {
                     base = Some(held.clone());
                     covered = k;
                     break;
                 }
             }
             let (mut state, cached, inherited) = match &base {
-                Some(b) if !b.canonical => unreachable!("only canonical bases are chosen"),
                 Some(b) => (
                     b.state.clone(),
                     b.ids.len(),
@@ -2695,14 +2710,21 @@ impl Adjudicator {
                 ids: ids.clone(),
                 text,
                 state,
-                canonical: true,
                 read_specs: std::sync::Mutex::new(inherited),
             });
             self.hold_checkpoint(id.clone(), held)?;
             cached
         };
-        if let Some(pin) = request.pin {
-            self.chats.set_pinned(&id, pin).map_err(Failure::InsufficientStorage)?;
+        if let Some(pin) = request.pin
+            && let Err(e) = self.chats.set_pinned(&id, pin)
+        {
+            // A refusal changes nothing: a context this request built goes.
+            if fresh {
+                self.chats.remove(&id);
+                self.states.forget_checkpoint(&id);
+                self.background.retain(|(checkpoint, _)| *checkpoint != id);
+            }
+            return Err(Failure::InsufficientStorage(e));
         }
         Ok(crate::contexts_api::ContextCreated {
             n_tokens: ids.len(),
@@ -2802,8 +2824,6 @@ impl Adjudicator {
                     ids: ids.clone(),
                     text: text.clone(),
                     state,
-                    // Prefilled from a canonical base, or from nothing.
-                    canonical: base.as_ref().is_none_or(|b| b.canonical),
                     read_specs: std::sync::Mutex::new(inherited),
                 });
                 // Complete: readers may fork it from here on, while the
@@ -2901,7 +2921,6 @@ impl Adjudicator {
                 id.clone(),
                 Arc::new(ChatCheckpoint {
                     kind: CheckpointKind::ChatTurn,
-                    canonical: false,
                     ids: all,
                     text: format!(
                         "{}{}{generated_text}{}",
@@ -3081,7 +3100,7 @@ impl Adjudicator {
                 let held = self
                     .chats
                     .get(&context.checkpoint)
-                    .ok_or_else(|| unknown_checkpoint(&context.checkpoint))?;
+                    .ok_or_else(|| unknown_read_context(&context.checkpoint))?;
                 Some(held)
             }
         };

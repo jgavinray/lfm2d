@@ -56,6 +56,18 @@ pub fn checkpoint_id(ids: &[u32]) -> String {
     crate::hash::sha256_hex_bytes(&bytes)
 }
 
+/// A held context's id ([`crate::contexts_api`]): the sha256 of a domain tag
+/// and then the ids, so a context never shares an id with a chat checkpoint.
+/// The two are different computations of the same ids: a chat's generated
+/// tokens were decoded one at a time, a context's assistant turns are
+/// prefilled, and this engine's numbers depend on the block size. One id
+/// naming both would make a read of it depend on which was held first.
+pub fn context_id(ids: &[u32]) -> String {
+    let mut bytes = b"lfm2d-context\0".to_vec();
+    bytes.extend(ids.iter().flat_map(|id| id.to_le_bytes()));
+    crate::hash::sha256_hex_bytes(&bytes)
+}
+
 /// Whether `id` could name a checkpoint: 64 lowercase hex digits.
 pub fn is_checkpoint_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -87,14 +99,6 @@ pub(crate) struct ChatCheckpoint {
     pub(crate) ids: Vec<u32>,
     pub(crate) text: String,
     pub(crate) state: candle_transformers::models::quantized_lfm2_moe::State,
-    /// Every token of `ids` was prefilled under the canonical schedule (each
-    /// segment chunked from its own start). An assistant checkpoint is not:
-    /// its generated tokens were decoded one at a time, which is a different
-    /// computation on this engine (block size picks the kernel), and so is
-    /// any checkpoint built on one. Only a canonical checkpoint is a base a
-    /// context build may forward from: the state it reaches must be the one
-    /// a whole build reaches.
-    pub(crate) canonical: bool,
     /// The ids of the specs this chat has been tail-read with, on this
     /// checkpoint or one before it in the chain: the checkpoints a turn
     /// leaves inherit them, and get those specs' tail prefixes filled: a

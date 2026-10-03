@@ -186,6 +186,11 @@ fn combine(method: Method, ls: &[Vec<f64>], ps: &[Vec<f64>], g: &[f64]) -> Optio
                 }
             }
             let max = acc.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            if max == f64::NEG_INFINITY {
+                // Every option ruled out by some weighted context: the
+                // product of experts is empty, not a distribution.
+                return Some(vec![f64::NAN; k]);
+            }
             let e: Vec<f64> = acc.iter().map(|x| (x - max).exp()).collect();
             let total = sum_in_order(&e);
             Some(e.iter().map(|x| x / total).collect())
@@ -211,8 +216,12 @@ pub fn pool(logprobs: &[Vec<f64>], mass: &[f64], settings: &PoolSettings) -> Res
     let mut ls = Vec::with_capacity(n);
     let mut ps = Vec::with_capacity(n);
     for row in logprobs {
-        if row.len() != k || !row.iter().any(|v| v.is_finite()) || row.iter().any(|v| v.is_nan()) {
-            return Err(format!("a context's option logprobs must be {k} numbers, at least one finite"));
+        // -inf rules an option out; NaN and +inf are not log-probabilities.
+        if row.len() != k || !row.iter().any(|v| v.is_finite()) || row.iter().any(|v| v.is_nan() || *v == f64::INFINITY)
+        {
+            return Err(format!(
+                "a context's option logprobs must be {k} numbers below +inf, at least one finite"
+            ));
         }
         let l = log_normalize(row);
         ps.push(l.iter().map(|v| v.exp()).collect::<Vec<f64>>());
@@ -225,6 +234,9 @@ pub fn pool(logprobs: &[Vec<f64>], mass: &[f64], settings: &PoolSettings) -> Res
     };
     let probs = combine(settings.method, &ls, &ps, &g)
         .ok_or_else(|| "the weights sum to 0 (every context's mass underflowed?): nothing to pool".to_string())?;
+    if probs.iter().any(|p| !p.is_finite()) {
+        return Err("every option is ruled out by some weighted context: a log-linear pool has nothing left".into());
+    }
     let first = argmax(&ps[0]);
     let agree = ps.iter().all(|p| argmax(p) == first);
     let mut spread = 0.0f64;
@@ -245,7 +257,7 @@ pub fn pool(logprobs: &[Vec<f64>], mass: &[f64], settings: &PoolSettings) -> Res
                 let ls: Vec<Vec<f64>> = keep.iter().map(|&c| ls[c].clone()).collect();
                 let ps: Vec<Vec<f64>> = keep.iter().map(|&c| ps[c].clone()).collect();
                 let g: Vec<f64> = keep.iter().map(|&c| g[c]).collect();
-                combine(settings.method, &ls, &ps, &g)
+                combine(settings.method, &ls, &ps, &g).filter(|p| p.iter().all(|x| x.is_finite()))
             })
             .collect()
     };
@@ -402,6 +414,21 @@ mod tests {
         let l = vec![vec![1.0, 0.5, 0.0], vec![1.0, f64::NEG_INFINITY, 0.0]];
         let got = pool(&l, &[1.0, 1.0], &settings(Method::Loglinear, Weights::Given(vec![1.0, 0.0]))).unwrap();
         close(&got.probs, &pool(&l[..1], &[1.0], &PoolSettings::default()).unwrap().probs);
+    }
+
+    #[test]
+    fn non_finite_rows_and_an_empty_product_are_refused_not_nan() {
+        let e = pool(&[vec![0.0, f64::INFINITY]], &[1.0], &PoolSettings::default()).unwrap_err();
+        assert!(e.contains("+inf"), "{e}");
+        let e = pool(&[vec![0.0, f64::NAN]], &[1.0], &PoolSettings::default()).unwrap_err();
+        assert!(e.contains("+inf"), "{e}");
+        // Each context rules out the option the other keeps.
+        let disjoint = vec![vec![0.0, f64::NEG_INFINITY], vec![f64::NEG_INFINITY, 0.0]];
+        let e = pool(&disjoint, &[1.0, 1.0], &settings(Method::Loglinear, Weights::Uniform)).unwrap_err();
+        assert!(e.contains("ruled out"), "{e}");
+        // Linear still pools them: some context supports each.
+        let lin = pool(&disjoint, &[1.0, 1.0], &PoolSettings::default()).unwrap();
+        close(&lin.probs, &[0.5, 0.5]);
     }
 
     #[test]

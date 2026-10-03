@@ -93,7 +93,7 @@ impl Generator for Stub {
         if id != ID {
             return Err(Failure::NotFound(format!("no held context {id:?}")));
         }
-        Ok(ContextInfo { id: id.into(), n_tokens: 12, pinned: true, bytes: 4096, kind: "context".into() })
+        Ok(ContextInfo { id: id.into(), n_tokens: 12, pinned: true, bytes: 4096 })
     }
     fn context_delete(&mut self, id: &str) -> Result<ContextDeleted, Failure> {
         self.0.lock().unwrap().deleted.push(id.into());
@@ -181,7 +181,7 @@ async fn lookups_and_deletes_by_id_and_an_id_that_could_name_nothing_is_404_unas
     let delete = |id: &str| Request::delete(format!("/v1/contexts/{id}")).body(Body::empty()).unwrap();
     let (status, body) = call(&router, get(ID)).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body, serde_json::json!({"id": ID, "n_tokens": 12, "pinned": true, "bytes": 4096, "kind": "context"}));
+    assert_eq!(body, serde_json::json!({"id": ID, "n_tokens": 12, "pinned": true, "bytes": 4096}));
     let (status, body) = call(&router, delete(ID)).await;
     assert_eq!((status, body), (200, serde_json::json!({"id": ID, "deleted": true})));
     let other = "ab".repeat(32);

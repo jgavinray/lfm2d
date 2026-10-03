@@ -8,9 +8,11 @@
 //! chat. Opinion reads take one (`context: {checkpoint}`) or several
 //! (`contexts: [ids]`, pooled: [`crate::pool`]).
 //!
-//! The id is the chat checkpoint id ([`crate::chat_session::checkpoint_id`]),
-//! the sha256 of the token ids, so the same content gets the same id however
-//! it was built, and contexts live in the chat checkpoints' store under
+//! The id is [`crate::chat_session::context_id`], the sha256 of the token ids
+//! behind a domain tag, so the same content gets the same id however it was
+//! built and a context never shares an id with a chat checkpoint (a chat's
+//! generated tokens were decoded, a context's prefilled: two computations).
+//! Contexts live in the chat checkpoints' store under
 //! `--chat-checkpoint-budget-mib`, least recently used first. `pin: true`
 //! exempts one from eviction (pins hold at most half the budget: past that,
 //! `507`); `pin: false` unpins; absent leaves it as it was. A delete drops a
@@ -20,10 +22,11 @@
 //! its content and gets the same id back.
 //!
 //! The build renders and encodes each turn alone, like a chat turn, and
-//! forwards from the longest held prefix that ends at a turn, so adding a
-//! turn to a held context forwards only that turn, and the state is the one
-//! a single build of the whole would give (the canonical schedule,
-//! `crate::chat_session`).
+//! forwards from the longest held context that is a prefix ending at a turn,
+//! so adding a turn to a held context forwards only that turn, and the state
+//! is the one a single build of the whole would give (the canonical
+//! schedule, `crate::chat_session`). A refused pin (`507`) leaves nothing
+//! behind that the request built.
 //!
 //! Ported in shape from the megakernel council's `POST /mk/v1/contexts` (MIT,
 //! megakernel-qwen38-flashnext-strixhalo, 2026-10-03), in this daemon's
@@ -92,9 +95,6 @@ pub struct ContextInfo {
     pub n_tokens: usize,
     pub pinned: bool,
     pub bytes: usize,
-    /// `context` (built here) or `chat` (a `/v1/chat` checkpoint, readable
-    /// and deletable the same way).
-    pub kind: String,
 }
 
 /// `DELETE /v1/contexts/{id}`.

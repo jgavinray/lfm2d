@@ -88,14 +88,14 @@ fn held_contexts_and_multi_context_reads_on_the_real_model() {
     }
     let ids = tokenizer.encode(text.as_str(), false).unwrap().get_ids().to_vec();
     assert_eq!(a.chat_checkpoint_ids(&short.id).expect("held"), ids);
-    assert_eq!(short.id, lfm2d::chat_session::checkpoint_id(&ids));
+    assert_eq!(short.id, lfm2d::chat_session::context_id(&ids));
 
     // 2. Adding turns forwards from the held prefix.
     let long = build(&mut a, &context(turns(3), Some(true)));
     assert_eq!(long.cached_tokens, short.n_tokens, "forwarded from the one-turn context");
     assert!(long.pinned);
     let info = a.context_info(&long.id).unwrap();
-    assert_eq!((info.kind.as_str(), info.pinned, info.n_tokens), ("context", true, long.n_tokens));
+    assert_eq!((info.pinned, info.n_tokens), (true, long.n_tokens));
     let incremental = read_after(&mut a, &long.id).expect("a read after the context");
 
     // 3. The multi-context read is its one-context reads, and its pool.
@@ -123,10 +123,11 @@ fn held_contexts_and_multi_context_reads_on_the_real_model() {
         other => panic!("a chat from a context: {:?}", other.map(|r| r.text)),
     }
 
-    // 4b. A generated turn is never a base: its tokens were decoded one at a
-    // time, a different computation from a context's prefill. A context that
-    // re-renders a chat's reply and adds a turn forwards from the chat's
-    // user checkpoint at most, never from its assistant checkpoint.
+    // 4b. A chat checkpoint is never a base, nor a context: its generated
+    // tokens were decoded one at a time, a different computation from a
+    // context's prefill. A context that re-renders a chat's reply and adds a
+    // turn forwards from the longest held context, never from the chat's
+    // assistant checkpoint, though it extends those very ids.
     let started: lfm2d::chat_session::ChatRequest = serde_json::from_value(json!({
         "system": SYSTEM, "messages": turns(1).as_array().unwrap()[..1], "max_tokens": 256
     }))
@@ -145,6 +146,13 @@ fn held_contexts_and_multi_context_reads_on_the_real_model() {
         ),
     );
     let user_tokens = a.chat_checkpoint_ids(&turn.checkpoint_user).unwrap().len();
+    // The chat's user checkpoint has the one-turn context's ids, under its
+    // own id: both are held, and /v1/contexts does not answer for the chat's.
+    assert_eq!(a.chat_checkpoint_ids(&turn.checkpoint_user).unwrap(), ids);
+    assert_ne!(turn.checkpoint_user, short.id);
+    assert!(a.context_info(&short.id).is_ok());
+    assert!(matches!(a.context_info(&turn.checkpoint_user), Err(Failure::NotFound(_))));
+    assert!(matches!(a.context_delete(&turn.checkpoint_user), Err(Failure::NotFound(_))));
     let assistant = turn.checkpoint.clone().expect("a finished turn leaves a checkpoint");
     let assistant_tokens = a.chat_checkpoint_ids(&assistant).unwrap().len();
     eprintln!(
@@ -158,7 +166,7 @@ fn held_contexts_and_multi_context_reads_on_the_real_model() {
         replayed_ids.starts_with(&a.chat_checkpoint_ids(&assistant).unwrap()),
         "the context does not extend the assistant checkpoint, so this check is vacuous"
     );
-    assert!(replayed.cached_tokens <= user_tokens, "forwarded from a decoded checkpoint");
+    assert_eq!(replayed.cached_tokens, short.n_tokens, "forwarded from the one-turn context, not the chat");
 
     // 5. Deleted, then built whole: the same id, the same state.
     assert!(a.context_delete(&long.id).unwrap().deleted);

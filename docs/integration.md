@@ -223,16 +223,20 @@ tail (`400`), nor can a state that begins with a newline.
 (2026-10-03).** `POST /v1/contexts` builds a context from `system`,
 `tools` and `messages` (user, tool and assistant turns) and answers `{id,
 n_tokens, cached_tokens, prefill_ms, pinned, bytes}`; `GET` and `DELETE
-/v1/contexts/{id}` look one up and drop one. The id is invariant 16's
-checkpoint id (the sha256 of the token ids), so the same content gets the
-same id however it was built, and a context reads exactly like a chat
-checkpoint (invariant 17's tail read). It is not one: `/v1/chat` refuses
-to continue `from` a context (`400`), because its assistant turns were
-never generated here. Contexts share the checkpoint store and its budget.
+/v1/contexts/{id}` look one up and drop one. The id is the sha256 of a
+domain tag and the token ids, so the same content gets the same id however
+it was built, and it is never a chat checkpoint's id, even for the same
+ids: a chat's generated tokens were decoded one at a time and a context's
+are prefilled, which on this engine are different numbers. A context reads
+like a chat checkpoint (invariant 17's tail read, `context: {checkpoint:
+id}`), but it is not one: `/v1/chat` refuses to continue `from` a context
+(`400`), because its assistant turns were never generated here, and
+`/v1/contexts/{id}` answers only for contexts. Contexts share the checkpoint store and its budget.
 `pin: true` exempts one from eviction; pins hold at most half the budget
 (past that, `507 insufficient_storage`); `pin: false` unpins; absent
-leaves it as it was. A delete is not reference-counted: two consumers that
-pin the same content share one context. A restart forgets every context.
+leaves it as it was. A refused pin leaves nothing behind that the request
+built. A delete is not reference-counted: two consumers that pin the same
+content share one context. A restart forgets every context.
 An unknown id, and one that is not 64 lowercase hex digits, is a `404`:
 build it again from its content, which gives the same id back. A turn
 holding control-token text is refused (`400`), never escaped.
@@ -241,8 +245,9 @@ holding control-token text is refused (`400`), never escaped.
 `/v1/opinion` with `contexts` (1 to 8 distinct held ids, exclusive with
 `context`) runs invariant 17's tail read once per context, serially in
 request order, and answers `{spec, contexts, reads, pooled, pool,
-queue_ms}`. `reads[c]` is exactly the answer `context: {checkpoint:
-contexts[c]}` gives, bit for bit. `pooled` has one entry per question,
+queue_ms}`. `reads[c]` is the answer `context: {checkpoint: contexts[c]}`
+gives, bit for bit in every number but `queue_ms`, which is 0 there: the
+job's queue time is the response's own `queue_ms`. `pooled` has one entry per question,
 `{field, options, probs, agree, spread, leave_one_out}`:
 - `probs` pools each context's option probabilities. `pool.method` is
   `linear` (the weighted average: some context supports it) or
