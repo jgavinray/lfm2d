@@ -100,6 +100,10 @@ ASK_TIMEOUT_MS = 600_000
 READ_TIMEOUT_MS = 120_000
 WAIT_S = 900.0  # a request that waits for its job (behind at most an ask's reply)
 BOOT_RETRY_S = 5.0
+# Loglinear by default (Amy, 2026-10-03: "loglinear seems fine"): every context is asked and its probabilities
+# are its confidence; a product lets a confident context dominate and a flat one barely count. Each context's own
+# odds always show beside the pool.
+DEFAULT_POOL = {"method": "loglinear", "weights": "uniform"}
 MIN_MASS = 0.5  # under this much raw mass on the options, the page flags a read (as tail.html does)
 # One per tab: each is its identity everywhere on the page. None is green, amber or red, the verdict colors.
 PALETTE = ["#22e4ff", "#ff4fd8", "#a98bff", "#4d9dff", "#e6e6f0", "#ff8fb8", "#d4a8ff", "#9ff3ff"]
@@ -264,7 +268,7 @@ class Council:
         self.options: list[str] = []
         self.tabs: list[dict] = []
         self.decisions: list[dict] = []
-        self.pool = {"method": "linear", "weights": "uniform"}
+        self.pool = dict(DEFAULT_POOL)
         self.causes: list[dict] = []  # context or spec changes since the last backfill
         self.tab_seq = itertools.count(1)
         self.dec_seq = itertools.count(1)

@@ -227,8 +227,8 @@ each pinned on the daemon as a held context (`POST /v1/contexts`). On the
 right, an action is one `/v1/opinion` with `contexts`, read after every
 included tab in tab order. The page shows each context's odds over the
 spec's options beside its raw mass (flagged under 50%), its length and the
-weight it pooled with; the pooled verdict under both pools (linear and
-loglinear: the ternary plot's two stars); agree / spread; leave-one-out
+weight it pooled with; the pooled verdict under both pools (loglinear, the
+default, and linear: the ternary plot's two stars); agree / spread; leave-one-out
 ("without Memory → allow, PIVOTAL"); and a pulsing alert, kept up until
 acknowledged, for the loudest option. The daemon never picks: the verdict
 is the pool's top option, ties to the earlier one.

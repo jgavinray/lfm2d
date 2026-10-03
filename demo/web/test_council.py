@@ -524,7 +524,8 @@ class DecisionTests(CouncilTest):
         self.assertEqual(body["spec"], spec["id"])
         self.assertEqual(body["questions"], [{"field": spec["field"]}])
         self.assertEqual(body["state"], {"input": "cat README.md"})
-        self.assertEqual(body["pool"], {"method": "linear", "weights": "uniform"})
+        # Loglinear by default (Amy, 2026-10-03): a confident context dominates, a flat one barely counts.
+        self.assertEqual(body["pool"], {"method": "loglinear", "weights": "uniform"})
         self.assertEqual([p["tab"] for p in d["read"]["per"]], [tabs_[0]["id"], tabs_[2]["id"]])
 
     def test_the_pooled_verdict_follows_the_steered_contexts(self):
@@ -539,7 +540,7 @@ class DecisionTests(CouncilTest):
         lg, ms = [p["logprobs"] for p in r["per"]], [p["mass"] for p in r["per"]]
         for method in council_pool.METHODS:
             self.assertEqual(r["stars"][method], council_pool.pool(lg, ms, method, "uniform")["probs"])
-        want = council_pool.pool(lg, ms, "linear", "uniform")
+        want = council_pool.pool(lg, ms, "loglinear", "uniform")
         self.assertEqual(r["pooled"]["probs"], want["probs"])
         self.assertEqual([x["probs"] for x in r["loo"]], want["leave_one_out"])
         self.assertEqual([x["tab"] for x in r["loo"]], [p["tab"] for p in r["per"]])
@@ -629,14 +630,14 @@ class BackfillTests(CouncilTest):
         cr = self.cr
         cr.post("/decide", {"action": "make test"})
         e0, m = cr.mark(), cr.calls_mark()
-        cr.post("/pool", {"method": "loglinear"})
+        cr.post("/pool", {"method": "linear"})  # away from the loglinear default
         ev = cr.wait("backfill", after=e0)
         cr.idle()
         self.assertEqual(cr.reads_calls(m), [])
         self.assertEqual(ev["cause"][-1]["what"], "pool")
         r = cr.state_()["decisions"][0]["read"]
         self.assertEqual(r["pooled"]["probs"], council_pool.pool([p["logprobs"] for p in r["per"]],
-                                                                 [p["mass"] for p in r["per"]], "loglinear",
+                                                                 [p["mass"] for p in r["per"]], "linear",
                                                                  "uniform")["probs"])
 
     def test_switching_spec_rereads_under_the_new_spec_and_its_reads_carry_their_descriptions(self):
