@@ -502,7 +502,10 @@ out or the turn ending where the grammar forbids it); the model writing
 past the slot in one token (the grammar admits any token whose bytes
 begin the value, so `"a` is legal there — the model leaving the canonical
 path; 0 of 246 rows so far); an option that does not tokenize on its own
-pretokens after the slot. The harness counts these as `http_error` rows,
+pretokens after the slot; the describe walk exhausting `--describe-token-budget`
+before the slot (the refusal names the budget, the tokens consumed and the slot
+it never reached; unset is unlimited, and the README's flag table carries the
+knob). The harness counts these as `http_error` rows,
 never as reads.
 
 ### Runtime spec registration
