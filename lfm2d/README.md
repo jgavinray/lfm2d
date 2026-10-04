@@ -43,7 +43,7 @@ backend-gated, and the porting work lives in the candle fork.
 |---|---|---|---|---|
 | `rocm` | ROCm toolchain (hipcc, rocBLAS) | Radeon 8060S, gfx1151: everything; production | grouped (shared kernels) | `rocm:gfx1151:hip7.2` |
 | `cuda` | CUDA toolkit (nvcc) | DGX Spark, GB10 sm_121, CUDA 13.0, aarch64, since 2026-09-27: encoder parity, `demo/e2e.py`, real 8B suite | grouped (shared kernels, [docs/lfm25-grouped-prefill.md](../docs/lfm25-grouped-prefill.md)) | `cuda:sm_121:nvcc13.0:drv580.173.02` |
-| `sycl` | oneAPI 2026.1+ (`icpx` on `PATH`), Level Zero, Xe2+ GPU | Arc Pro B70 since 2026-10-02: encoder parity, every endpoint ([docs/lfm2d-b70-endpoint-exercise.md](../docs/lfm2d-b70-endpoint-exercise.md)) | grouped inside `indexed_moe_forward` at `batch*topk >= 64` ([docs/lfm25-sycl-b70.md](../docs/lfm25-sycl-b70.md)) | `sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics` |
+| `sycl` | oneAPI 2026.1+ (`icpx` on `PATH`), Level Zero, Xe2+ GPU | Arc Pro B70 since 2026-10-02: encoder parity, every endpoint ([docs/lfm2d-b70-endpoint-exercise.md](../docs/lfm2d-b70-endpoint-exercise.md)) | grouped inside `indexed_moe_forward` at `batch*topk >= 64` ([docs/lfm25-sycl-b70.md](../docs/lfm25-sycl-b70.md)) | `sycl:icpx2026.1:drv1.14.37020:Intel(R) Arc(TM) Pro B70 Graphics` |
 | `metal` | macOS | not verified | — | bare `metal` |
 
 The SYCL path differs from ROCm and CUDA in where the grouped prefill is
@@ -51,9 +51,10 @@ chosen: those two report `supports_grouped_moe` and take routing the engine
 packs once per layer, while SYCL reports `false` and switches to its grouped
 GEMM inside each indexed call. F8E4M3 is unimplemented on SYCL and errors
 loudly. The `sycl` build compiles `candle-sycl-kernels` with `icpx`; a
-plain `cargo build` never touches oneAPI. After a candle revision bump,
-clear `target/release/build/candle-sycl-kernels-*` (see the problems
-list below).
+plain `cargo build` never touches oneAPI. The kernels crate declares
+`links = "candle_sycl_kernels"` and hands its library directory down as
+`DEP_CANDLE_SYCL_KERNELS_LIB_DIR`, which `lfm2d/build.rs` rpaths directly —
+no more guessing the newest-named build dir after a candle bump.
 
 Candle core/nn/transformers are pinned together to one revision of our fork
 (`tobert/candle`, branch `lfm25-batch`) because crates.io 0.11 carries no
@@ -467,7 +468,7 @@ to traces, metrics, and logs. Device metadata comes from the loaded engine,
 not host hardware inventory; `lfm2d.execution.device_name` carries the
 selected device's identity where the backend can name its target (ROCm:
 `rocm:gfx1151:hip7.2`; CUDA: `cuda:sm_121:nvcc13.0:drv580.173.02`; SYCL:
-`sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics`) and is omitted elsewhere, and `lfm2d.candle_rev` names
+`sycl:icpx2026.1:drv1.14.37020:Intel(R) Arc(TM) Pro B70 Graphics`) and is omitted elsewhere, and `lfm2d.candle_rev` names
 the candle build. Metrics:
 `lfm2d.worker.queue_depth` (observable gauge over an `AtomicUsize`,
 incremented on send, decremented when the worker picks a command up),
@@ -546,20 +547,23 @@ decided and why (also in the relevant doc comments):
 
 ## Problems noted, not fixed
 
-- **`snapshot_id` names the GPU target on ROCm and CUDA, and only part of
-  it on SYCL.** It hashes the device identity and the candle revision
-  (`CANDLE_REV`, read from `Cargo.lock` by `lfm2d/build.rs`). ROCm's
+- **`snapshot_id` names the GPU target on ROCm, CUDA and SYCL.** It hashes
+  the device identity and the candle revision (`CANDLE_REV`, read from
+  `Cargo.lock` by `lfm2d/build.rs`). ROCm's
   (`rocm:gfx1151:hip7.2`, since 2026-09-24) comes from the fork's
   `RocmDevice::arch()`/`hip_version()`. CUDA's
   (`cuda:sm_121:nvcc13.0:drv580.173.02`, since 2026-09-27) is the compute
   capability, the nvcc release in the header of candle's own PTX, and the
   driver release from `/proc/driver/nvidia/version`: the driver
   JIT-compiles that PTX, so a driver update can move the numbers. SYCL's
-  (`sycl:<icpx>:<device name>`, since 2026-10-02) reads the compiler release
-  from `CANDLE_SYCL_ICPX_VERSION` at run time, defaulting to `2026.1`, not
-  from the build that made `libcandle_sycl.so`; and the kernels build to
-  SPIR-V that the GPU driver JIT-compiles, so, as on CUDA, the driver
-  release belongs in the identity and is not there yet. Metal still
+  (`sycl:icpx<release>:drv<driver>:<device name>`, since 2026-10-03) is the
+  icpx release baked into `candle-sycl-kernels` at build time from the very
+  binary that compiled the SPIR-V (the run-time `CANDLE_SYCL_ICPX_VERSION`
+  env that used to name it silently defaulted to `2026.1` and could
+  outlive the toolchain), the Level Zero driver release reported by the
+  selected device (that driver JIT-compiles the SPIR-V, so, as on CUDA, it
+  moves the numbers), and the device name. A missing part is a selection
+  error, never a hole in the identity. Metal still
   reports the bare backend name.
 - **SYCL: the 8B engine's router bias and conv weights alias freed
   memory** (found in review 2026-10-03, code-read; not yet reproduced on a
@@ -578,12 +582,6 @@ decided and why (also in the relevant doc comments):
   own and logs nothing until it finishes, and the two cold describes that
   did finish took 17.8 and 25.7 s. Not seen on ROCm or CUDA. The aliased
   router bias above is a candidate contributing factor; re-run after it.
-- **SYCL: a stale kernels library survives a candle bump.**
-  `lfm2d/build.rs` rpaths the newest-named
-  `target/<profile>/build/candle-sycl-kernels-*/out` that holds
-  `libcandle_sycl.so`; with several hash dirs present, name order is not
-  build order. Clear those dirs after a bump until the kernels crate hands
-  its path down directly.
 - **Spec registration telemetry has no source address.** The daemon has
   no `ConnectInfo` wiring, so a registration or eviction log line cannot
   say who uploaded the spec.

@@ -10,7 +10,7 @@ default = []
 rocm = ["lfm2-encoder/rocm", "candle-transformers/rocm"]
 cuda = ["lfm2-encoder/cuda", "candle-transformers/cuda", "dep:candle-kernels"]
 metal = ["lfm2-encoder/metal", "candle-transformers/metal"]
-sycl = ["lfm2-encoder/sycl", "candle-transformers/sycl"]
+sycl = ["lfm2-encoder/sycl", "candle-transformers/sycl", "dep:candle-sycl-kernels"]
 
 [dependencies]
 lfm2-encoder = { path = ".." }
@@ -20,6 +20,12 @@ candle-nn = { git = "https://github.com/tobert/candle", rev = "6c962c637f2ee8b0e
 # CUDA only: the PTX candle's kernels were built as, whose header names the
 # nvcc that built them (the device identity, `device.rs`).
 candle-kernels = { git = "https://github.com/tobert/candle", rev = "6c962c637f2ee8b0e1e54c781f40c67430470c25", optional = true }
+# SYCL only, direct (not just through candle-core) so the crate's `links =
+# "candle_sycl_kernels"` build-script metadata reaches THIS build script as
+# DEP_CANDLE_SYCL_KERNELS_LIB_DIR — the final link needs the kernels .so
+# directory for an rpath, and cargo hands metadata only to direct dependents
+# (tobert/lfm2d#3 item 8). Requires a candle rev carrying the links key.
+candle-sycl-kernels = { git = "https://github.com/tobert/candle", rev = "6c962c637f2ee8b0e1e54c781f40c67430470c25", optional = true }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }

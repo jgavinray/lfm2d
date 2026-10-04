@@ -24,37 +24,29 @@ fn main() {
     // OUT_DIR. That crate adds an rpath for its own targets, but a downstream
     // binary does not inherit it: `cargo test` papers over this with a
     // LD_LIBRARY_PATH, and a daemon started by anything else fails to load the
-    // library. Add the rpath here, where the final link happens.
+    // library. Add the rpath here, where the final link happens. The directory
+    // comes from the kernels crate's `links = "candle_sycl_kernels"` metadata
+    // (`DEP_CANDLE_SYCL_KERNELS_LIB_DIR`), which cargo hands to this build
+    // script precisely because lfm2d depends on that crate directly under the
+    // sycl feature. This replaces globbing `build/` for a
+    // `candle-sycl-kernels-<hash>` directory and taking the newest-named one
+    // that holds a .so — which a stale directory from a superseded candle pin
+    // could win outright, silently rpathing the wrong kernels into the
+    // binary (tobert/lfm2d#3 item 8). A missing variable is a hard failure:
+    // the pinned candle lacks the links key, so the sycl build must name the
+    // paired candle branch instead of guessing.
     if std::env::var_os("CARGO_FEATURE_SYCL").is_some() {
-        if let Some(dir) = sycl_kernel_dir() {
-            println!("cargo:rerun-if-changed={}", dir.display());
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
-        } else {
-            panic!("sycl feature is on but no candle-sycl-kernels build directory holds libcandle_sycl.so");
-        }
+        let dir = std::env::var("DEP_CANDLE_SYCL_KERNELS_LIB_DIR").unwrap_or_else(|_| {
+            panic!(
+                "the sycl feature requires candle-sycl-kernels' links metadata \
+                 (DEP_CANDLE_SYCL_KERNELS_LIB_DIR); bump the candle pin to a rev \
+                 carrying its links key (tobert/candle sycl-kernel-links)"
+            )
+        });
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     }
 }
 
-/// `target/<profile>/build/candle-sycl-kernels-<hash>/out`, found from this
-/// build script's own OUT_DIR (`target/<profile>/build/lfm2d-<hash>/out`).
-fn sycl_kernel_dir() -> Option<std::path::PathBuf> {
-    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").ok()?);
-    let build = out.parent()?.parent()?;
-    let mut found: Vec<_> = std::fs::read_dir(build)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("candle-sycl-kernels-"))
-        })
-        .map(|p| p.join("out"))
-        .filter(|p| p.join("libcandle_sycl.so").is_file())
-        .collect();
-    found.sort();
-    found.pop()
-}
 
 /// The git commit after `#` for a git source, or `crates.io:<version>` for a
 /// registry one. Two `candle-core` packages in one lockfile would make "the

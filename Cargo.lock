@@ -1536,6 +1536,7 @@ dependencies = [
  "candle-core",
  "candle-kernels",
  "candle-nn",
+ "candle-sycl-kernels",
  "candle-transformers",
  "clap",
  "crossbeam-channel",

@@ -122,16 +122,22 @@ fn identity_of(device: &Device, backend: DeviceArg) -> Result<String, String> {
         Device::Rocm(d) => Ok(format!("rocm:{}:hip{}", d.arch(), d.hip_version())),
         #[cfg(feature = "sycl")]
         Device::Sycl(d) => {
-            // oneAPI 2026.x: the compiler release that built libcandle_sycl.so
-            // (its kernels JIT nothing at runtime), plus the GPU's own name —
-            // "sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics".
+            // Three things decide what a SYCL device computes: the icpx
+            // release that compiled the kernels' SPIR-V — baked into
+            // candle-sycl-kernels at build time from the very binary that
+            // built them (the run-time CANDLE_SYCL_ICPX_VERSION env that used
+            // to name it silently defaulted to 2026.1 and could outlive the
+            // toolchain) — the GPU driver that JIT-compiles that SPIR-V at
+            // load, and the device the selected ordinal resolved to
+            // (tobert/lfm2d#3 item 8).
             let info = d
                 .queue()
                 .device_info()
                 .map_err(|e| format!("sycl identity: device info: {e}"))?;
-            let icpx = std::env::var("CANDLE_SYCL_ICPX_VERSION")
-                .unwrap_or_else(|_| "2026.1".into());
-            Ok(format!("sycl:{icpx}:{}", info.name))
+            let driver = d
+                .driver_version()
+                .map_err(|e| format!("sycl identity: driver version: {e}"))?;
+            sycl_identity(candle_core::sycl_backend::ICPX_VERSION, &driver, &info.name)
         }
         #[cfg(feature = "cuda")]
         Device::Cuda(d) => {
@@ -152,6 +158,23 @@ fn identity_of(device: &Device, backend: DeviceArg) -> Result<String, String> {
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn cuda_identity((major, minor): (i32, i32), nvcc: &str, driver: &str) -> String {
     format!("cuda:sm_{major}{minor}:nvcc{nvcc}:drv{driver}")
+}
+
+/// The SYCL counterpart of [`cuda_identity`]: the compiler release that
+/// built the kernels' SPIR-V, the driver release that JIT-compiles it at
+/// run time, and the device name — `sycl:icpx2026.1:drv1.14.37020:Intel(R)
+/// Arc(TM) Pro B70 Graphics`. Every part is a real captured value, and an
+/// empty one is an error rather than a hole in the identity: a `snapshot_id`
+/// that hides which toolchain produced the running code is the bug
+/// (tobert/lfm2d#3 item 8).
+#[cfg_attr(not(feature = "sycl"), allow(dead_code))]
+fn sycl_identity(icpx: &str, driver: &str, name: &str) -> Result<String, String> {
+    for (what, value) in [("icpx release", icpx), ("driver version", driver), ("device name", name)] {
+        if value.trim().is_empty() {
+            return Err(format!("sycl identity: {what} is empty"));
+        }
+    }
+    Ok(format!("sycl:icpx{icpx}:drv{driver}:{name}"))
 }
 
 /// The nvcc release that compiled candle's kernels, from the header it
@@ -290,6 +313,29 @@ mod tests {
         assert!(nvcc_release(".version 9.0\n.target sm_121f\n").is_err());
         assert!(driver_release("GCC version:  gcc version 13.3.0\n").is_err());
         assert!(driver_release("NVRM version: NVIDIA UNIX Open Kernel Module for aarch64\n").is_err());
+    }
+
+    // The driver fixture is the Level Zero release `sycl-ls` reports on the
+    // Arc Pro B70 host (github.com/jeffgrover/b70-setup: "Level Zero reports
+    // driver 1.14.37020"); the icpx release and device name are the ones the
+    // repo docs record for the B70 stack (oneAPI 2026.1, the B70's
+    // device_info name). The test pins the *shape* — CUDA's identity test
+    // works the same way, over captured strings — and the CPU host here has
+    // no driver to observe, which is why the real value is exercised only
+    // behind `LFM2D_TEST_GPU=sycl` in tests/device_real.rs.
+    #[test]
+    fn sycl_identity_names_compiler_driver_and_device() {
+        assert_eq!(
+            sycl_identity("2026.1", "1.14.37020", "Intel(R) Arc(TM) Pro B70 Graphics").unwrap(),
+            "sycl:icpx2026.1:drv1.14.37020:Intel(R) Arc(TM) Pro B70 Graphics"
+        );
+    }
+
+    #[test]
+    fn sycl_identity_parts_fail_rather_than_guess() {
+        assert!(sycl_identity("", "1.14.37020", "Intel(R) Arc(TM) Pro B70 Graphics").is_err());
+        assert!(sycl_identity("2026.1", " ", "Intel(R) Arc(TM) Pro B70 Graphics").is_err());
+        assert!(sycl_identity("2026.1", "1.14.37020", "").is_err());
     }
 
     #[test]
