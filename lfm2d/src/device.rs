@@ -321,8 +321,10 @@ mod tests {
     // repo docs record for the B70 stack (oneAPI 2026.1, the B70's
     // device_info name). The test pins the *shape* — CUDA's identity test
     // works the same way, over captured strings — and the CPU host here has
-    // no driver to observe, which is why the real value is exercised only
-    // behind `LFM2D_TEST_GPU=sycl` in tests/device_real.rs.
+    // no driver to observe: the real value is asserted only behind
+    // `LFM2D_TEST_GPU=sycl` in tests/spec_registry_real.rs (the sycl arm of
+    // the identity-parts match); tests/device_real.rs checks only that the
+    // backend is sycl.
     #[test]
     fn sycl_identity_names_compiler_driver_and_device() {
         assert_eq!(

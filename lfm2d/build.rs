@@ -35,6 +35,9 @@ fn main() {
     // binary (tobert/lfm2d#3 item 8). A missing variable is a hard failure:
     // the pinned candle lacks the links key, so the sycl build must name the
     // paired candle branch instead of guessing.
+    // No `cargo:rerun-if-changed={dir}` here (the old picker emitted one):
+    // a changed library directory changes DEP_CANDLE_SYCL_KERNELS_LIB_DIR,
+    // and that already reruns this build script.
     if std::env::var_os("CARGO_FEATURE_SYCL").is_some() {
         let dir = std::env::var("DEP_CANDLE_SYCL_KERNELS_LIB_DIR").unwrap_or_else(|_| {
             panic!(

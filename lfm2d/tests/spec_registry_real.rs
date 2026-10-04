@@ -186,6 +186,10 @@ fn an_adjudicator_booted_with_no_specs_serves_the_first_upload() {
         "rocm" => &["rocm:gfx", ":hip"],
         // CUDA's driver JIT-compiles candle's PTX, so the driver counts too.
         "cuda" => &["cuda:sm_", ":nvcc", ":drv"],
+        // SYCL's identity names the icpx release baked into the kernel build
+        // and the Level Zero driver that JIT-compiles its SPIR-V (the format
+        // is sycl:icpx<release>:drv<driver>:<device name>, src/device.rs).
+        "sycl" => &["sycl:icpx", ":drv"],
         other => panic!("no device identity is defined for {other} yet"),
     };
     assert!(info.device.starts_with(parts[0]), "device identity: {}", info.device);
