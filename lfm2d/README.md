@@ -131,6 +131,7 @@ CLI flags, each with an env-var fallback (`clap`'s `env` feature):
 | `--adjudicator-tokenizer` | `LFM2D_ADJUDICATOR_TOKENIZER` | The matching Hugging Face `tokenizer.json`, checked against the GGUF's vocabulary at load |
 | `--adjudicator-context` | (none) | Context budget including output, default `4096`, range `128`–`32768` (`docs/lfm25-adjudicator.md`, "Context budget") |
 | `--adjudicator-repeat-penalty` | (none) | Sign-aware repetition penalty, default `1.05` (the checkpoint author's), range `1.0`–`2.0`; part of every spec's `snapshot_id` |
+| `--describe-token-budget` | `LFM2D_DESCRIBE_TOKEN_BUDGET` | Decode-token cap for one `/v1/opinion` describe walk, at least `1` if set (unset = no budget, and the walk stops only at `--adjudicator-context`'s ceiling as before); when the walk exhausts it, the read fails with an `"internal"` (500) naming the budget and the tokens consumed. A knob for a runaway describe, not a new failure mode for healthy deployments (`tobert/lfm2d#3` item 2) |
 | `--opinion-spec` (repeatable) | `LFM2D_OPINION_SPECS` (comma-separated) | A boot-time spec, named by its file stem. Optional: with none the menu starts empty and fills by upload. Needs the adjudicator. No spec is a default |
 | `--opinion-spec-capacity` | `LFM2D_OPINION_SPEC_CAPACITY` | How many uploaded specs stay resident (LRU), default `8`; boot specs don't count and are never evicted |
 | `--no-probe` | `LFM2D_PROBE` (`0` disables) | Removes `/v1/probe`; `/v1/opinion` and `/v1/adjudicate` are unaffected |
@@ -569,15 +570,19 @@ decided and why (also in the relevant doc comments):
   temporary QTensors, so the cache entry returns to the pool while the
   model still reads it. Encoder parity cannot see it (no QTensor there).
   Treat 8B numbers measured on SYCL before the fix as suspect.
-- **SYCL: a cold `/v1/opinion` describe runs until the client deadline.**
-  Seen on the B70 (2026-10-02, [docs/lfm2d-b70-endpoint-exercise.md](../docs/lfm2d-b70-endpoint-exercise.md)):
-  with the described-state cache cold, the read holds the worker at one
-  core until `timeout_ms`, then returns `cancelled`; warm reads take 79-97
-  ms. It answers cancellation, so the worker is walking, not deadlocked:
-  `describe_then_read` decodes up to `context_limit` with no budget of its
-  own and logs nothing until it finishes, and the two cold describes that
-  did finish took 17.8 and 25.7 s. Not seen on ROCm or CUDA. The aliased
-  router bias above is a candidate contributing factor; re-run after it.
+- **SYCL: a cold `/v1/opinion` describe can still run until the client
+  deadline.** Seen on the B70 (2026-10-02, [docs/lfm2d-b70-endpoint-exercise.md](../docs/lfm2d-b70-endpoint-exercise.md)):
+  with the described-state cache cold, the read held the worker at one
+  core until `timeout_ms`, then returned `cancelled`; warm reads take 79-97
+  ms. It answers cancellation, so the worker is walking, not deadlocked.
+  The invisibility half is fixed (tobert/lfm2d#3 item 2): the walk now
+  logs at `info!` before its first token (spec, rendered-prompt tokens,
+  effective budget) and again on completion (tokens decoded, elapsed), and
+  `--describe-token-budget` caps the walk, refusing with an `"internal"`
+  that names the budget and what was spent. The slowness itself is NOT
+  fixed — the two cold describes that did finish took 17.8 and 25.7 s, and
+  the aliased router bias above remains the candidate contributing factor;
+  re-run on the B70 after it. Not seen on ROCm or CUDA.
 - **SYCL: a stale kernels library survives a candle bump.**
   `lfm2d/build.rs` rpaths the newest-named
   `target/<profile>/build/candle-sycl-kernels-*/out` that holds

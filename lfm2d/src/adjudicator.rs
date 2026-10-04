@@ -1705,6 +1705,79 @@ mod checkpoint_load_error_tests {
     }
 }
 
+/// Whether a describe walk that has decoded `decoded` tokens has run out
+/// of budget: `None` (the default) is unlimited — today's behavior, which
+/// a healthy ROCm/CUDA/SYCL deployment never leaves — and `Some(n)` stops
+/// the walk once `n` tokens are on the board. Pure so the gate is unit-
+/// tested without weights; the walk itself consults nothing else.
+fn describe_budget_exhausted(budget: Option<usize>, decoded: usize) -> bool {
+    budget.is_some_and(|budget| decoded >= budget)
+}
+
+/// The refusal when the walk exhausts its budget mid-describe: the walk's
+/// existing engine-side channel (`Internal`, the same one the
+/// model-left-the-canonical-path and ran-out-before-the-slot failures
+/// speak, → 500 `{"error":{"type":"internal",...}}`), with the two numbers
+/// that make a pathological backend diagnosable from the client side —
+/// what was allowed and what was spent — plus the slot it never reached.
+fn describe_budget_failure(budget: usize, consumed: usize, field: &str) -> Failure {
+    Failure::Internal(format!(
+        "describe exhausted its {budget}-token budget (set by --describe-token-budget) after \
+         {consumed} decoded tokens without reaching the {field:?} slot"
+    ))
+}
+
+/// The describe walk's budget gate (tobert/lfm2d#3 item 2). Pre-fix, the
+/// walk had no budget at all — the loop walked to `context_limit` whatever
+/// `--describe-token-budget` said — so these tests pin the behavior the
+/// gate added: unset means unlimited (healthy ROCm/CUDA deployments see no
+/// change), `Some(n)` stops the walk at exactly `n` decoded tokens, and the
+/// refusal names both the budget and what it consumed. The end-to-end walk
+/// needs real weights (the HTTP-contract fakes run a stub `Generator` that
+/// never decodes, so they cannot reach the gate); `tests/opinion_real.rs`
+/// carries the ignored real-model case for the GPU hosts.
+#[cfg(test)]
+mod describe_token_budget_tests {
+    use super::*;
+
+    #[test]
+    fn no_budget_walks_unbounded() {
+        // The default: no budget, no failure, whatever the token count —
+        // exactly today's behavior, which the gate must preserve.
+        assert!(!describe_budget_exhausted(None, 0));
+        assert!(!describe_budget_exhausted(None, 4095));
+        assert!(!describe_budget_exhausted(None, usize::MAX));
+    }
+
+    #[test]
+    fn a_budget_stops_at_its_own_count_and_not_before() {
+        assert!(!describe_budget_exhausted(Some(64), 63), "one token short is still inside");
+        assert!(describe_budget_exhausted(Some(64), 64), "the budget-th token is exhausted");
+        assert!(describe_budget_exhausted(Some(64), 100), "past it stays exhausted");
+    }
+
+    #[test]
+    fn a_zero_budget_is_exhausted_before_its_first_token() {
+        // `Cli::validate` refuses this spelling at startup; the gate itself
+        // still behaves sanely rather than underflowing.
+        assert!(describe_budget_exhausted(Some(0), 0));
+    }
+
+    /// The refusal is the walk's existing engine-side channel (`Internal`
+    /// → 500 `{"error":{"type":"internal",...}}`) and must name the two
+    /// numbers that make a cold-backend hang diagnosable from the client's
+    /// side: what was allowed and what was spent.
+    #[test]
+    fn the_exhaustion_refusal_names_the_budget_and_the_tokens_consumed() {
+        let Failure::Internal(message) = describe_budget_failure(64, 64, "verdict") else {
+            panic!("budget exhaustion is an engine-side failure, as every other walk failure is");
+        };
+        assert!(message.contains("budget"), "{message}");
+        assert!(message.contains("64"), "{message}");
+        assert!(message.contains("verdict"), "{message}");
+    }
+}
+
 /// Real-tokenizer facts pinned against the actual LFM2.5-8B-A1B
 /// `tokenizer.json` — no GGUF, no candle model, so this stays a plain
 /// `#[test]` rather than an `#[ignore]`d real-model one (same "Tier 1b"
@@ -1960,6 +2033,11 @@ pub struct Adjudicator {
     weight_dtypes: Vec<String>,
     execution: crate::device::ExecutionDevice,
     context_limit: usize,
+    /// `--describe-token-budget`: the ceiling on one `/v1/opinion`
+    /// description decode; `None` decodes to `context_limit`, the
+    /// pre-flag behavior (tobert/lfm2d#3 item 2). See
+    /// [`describe_budget_exhausted`].
+    describe_token_budget: Option<usize>,
     specs: SpecStore<LoadedSpec>,
     /// Chat checkpoints (`POST /v1/chat`), which tail reads fork. See
     /// `crate::chat_session`.
@@ -2091,6 +2169,7 @@ impl Adjudicator {
             weight_dtypes,
             execution,
             context_limit: cli.adjudicator_context,
+            describe_token_budget: cli.describe_token_budget,
             specs: SpecStore::new(boot_specs, cli.opinion_spec_capacity),
             chats: crate::chat_session::CheckpointStore::new(budget),
             states: StateCache::new(state_budget, state_size),
@@ -3246,6 +3325,26 @@ impl Adjudicator {
                 }
                 let prefill_ms = begin.elapsed().as_secs_f64() * 1000.;
                 let describe = Instant::now();
+                // Logged BEFORE the first token is sampled, so a cold read
+                // that never comes back (the B70 reports: the worker answered
+                // cancellation for 17.8/25.7 s while the client waited on
+                // silence) is attributable from the log alone: which spec,
+                // how long the render is, and the budget the walk runs
+                // under (tobert/lfm2d#3 item 2). The effective budget is the
+                // flag when set, capped by the walk's own ceiling — the
+                // decoded-token count the loop can reach before the
+                // `context_limit` ends it.
+                let walk_ceiling = context_limit - prompt_ids.len();
+                let effective_budget =
+                    self.describe_token_budget.map_or(walk_ceiling, |budget| budget.min(walk_ceiling));
+                tracing::info!(
+                    spec = %request.spec,
+                    id = %spec.id,
+                    prompt_tokens = prompt_ids.len(),
+                    budget_tokens = effective_budget,
+                    budget_set = self.describe_token_budget.is_some(),
+                    "describe: walking the grammar to every question's slot"
+                );
                 let mut sampler = crate::constrain::Decoder::new(
                     Some(&grammar),
                     logits.device(),
@@ -3258,7 +3357,31 @@ impl Adjudicator {
                 let mut slots = Vec::with_capacity(questions.len());
                 let mut slot_text = questions[0].slot_text();
                 for _ in prompt_ids.len()..context_limit {
+                    // Cancellation keeps its pre-fix position first, so a
+                    // request that cancels on the budget boundary still
+                    // answers `cancelled` exactly as before.
                     check()?;
+                    // The gate, consulted once per token BEFORE the next
+                    // sample: a slot reached on exactly the budget-th token
+                    // passed through the slot branch below first, so
+                    // arriving here at or past the budget means the walk is
+                    // still short of `questions[slots.len()]`'s slot. With
+                    // the flag unset this never fires, and the walk ends on
+                    // the context range exactly as before.
+                    if describe_budget_exhausted(self.describe_token_budget, generated.len()) {
+                        let budget = self.describe_token_budget.expect("the gate only fires when set");
+                        let field = &questions[slots.len()].field;
+                        tracing::error!(
+                            spec = %request.spec,
+                            id = %spec.id,
+                            budget_tokens = budget,
+                            decoded_tokens = generated.len(),
+                            field,
+                            describe_ms = describe.elapsed().as_secs_f64() * 1000.,
+                            "describe exhausted its token budget before the next question's slot"
+                        );
+                        return Err(describe_budget_failure(budget, generated.len(), field));
+                    }
                     let token = sampler.sample(&logits)?;
                     if self.tokenizer.id_to_token(token).is_none() {
                         return Err(Failure::Internal(format!(
@@ -3332,6 +3455,17 @@ impl Adjudicator {
                 logits.device().synchronize()?;
                 check()?;
                 let describe_ms = describe.elapsed().as_secs_f64() * 1000.;
+                // The other half of the pair the start log opens: a cold
+                // walk that finishes is now visible with its cost, and one
+                // that never returns leaves the start line as the record of
+                // exactly where it stalled (tobert/lfm2d#3 item 2).
+                tracing::info!(
+                    spec = %request.spec,
+                    id = %spec.id,
+                    decoded_tokens = generated.len(),
+                    describe_ms,
+                    "describe: every question's slot reached"
+                );
                 (slots, cached_tokens, prefill_ms, describe_ms)
             }
         };

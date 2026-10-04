@@ -50,6 +50,20 @@ pub struct Cli {
     /// 1.0 disables it; 1.05 is the checkpoint author's recommendation.
     #[arg(long, default_value_t = 1.05)]
     pub adjudicator_repeat_penalty: f32,
+    /// Token budget for `/v1/opinion`'s description decode — the
+    /// `describe_then_read` walk that generates every field before the
+    /// questions' answer slots (tobert/lfm2d#3 item 2). Unset (default):
+    /// the walk decodes up to the spec's `context_limit`, exactly as
+    /// before, so healthy ROCm/CUDA/SYCL deployments see no behavior
+    /// change at all. Set to `n`: a description that has not reached every
+    /// question's slot after `n` decoded tokens fails as an engine-side
+    /// error naming the budget and the tokens consumed, instead of
+    /// walking to the context ceiling — the knob that makes a pathological
+    /// backend (cold B70 describes ran 17.8 and 25.7 s) a bounded,
+    /// attributable failure rather than a client-deadline hang. Must be
+    /// at least 1; unset it for no budget.
+    #[arg(long = "describe-token-budget", env = "LFM2D_DESCRIBE_TOKEN_BUDGET")]
+    pub describe_token_budget: Option<usize>,
     /// Prompt specs loaded at boot, each a JSON `{system, output_schema, ...}`
     /// prefilled into its own resident prefix. Repeatable, and optional: with
     /// none the menu starts empty and fills through `POST /v1/opinion/specs`.
@@ -287,6 +301,13 @@ impl Cli {
         if self.opinion_spec_capacity == 0 {
             return Err("--opinion-spec-capacity must be at least 1".into());
         }
+        // `clap` can parse `--describe-token-budget 0` (an `Option<usize>`
+        // accepts it); a budget of 0 would refuse every describe before its
+        // first token — no deployment means that. Unset is the way to ask
+        // for no budget.
+        if self.describe_token_budget == Some(0) {
+            return Err("--describe-token-budget must be at least 1; leave it unset for no budget".into());
+        }
         Ok(())
     }
 
@@ -317,6 +338,7 @@ mod tests {
             adjudicator_tokenizer: None,
             adjudicator_context: 4096,
             adjudicator_repeat_penalty: 1.05,
+            describe_token_budget: None,
             opinion_specs: Vec::new(),
             opinion_spec_capacity: 8,
             chat_checkpoint_budget_mib: 16384,
@@ -366,6 +388,7 @@ mod tests {
             adjudicator_tokenizer: None,
             adjudicator_context: 4096,
             adjudicator_repeat_penalty: 1.05,
+            describe_token_budget: None,
             opinion_specs: Vec::new(),
             opinion_spec_capacity: 8,
             chat_checkpoint_budget_mib: 16384,
@@ -629,6 +652,96 @@ mod tests {
         // is unset.
         unsafe {
             std::env::remove_var("LFM2D_PROBE");
+        }
+    }
+
+    // ------------------------------------------------ --describe-token-budget
+    //
+    // tobert/lfm2d#3 item 2: the cold `/v1/opinion` describe answered
+    // cancellation with no budget and nothing in the log. The budget is a
+    // knob, not a new failure mode: unset (the default) preserves today's
+    // ceiling exactly on every backend, and `0` — which clap happily
+    // parses — must die at `Cli::validate`, since a budget of 0 would
+    // refuse every describe before its first token.
+
+    #[test]
+    fn describe_token_budget_defaults_to_none_and_parses_from_the_flag() {
+        let _guard = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: guarded by PROBE_ENV_LOCK; the default asserts below are
+        // only meaningful with the env var not set, and every
+        // env-reading test in this file shares this one lock.
+        unsafe {
+            std::env::remove_var("LFM2D_DESCRIBE_TOKEN_BUDGET");
+        }
+        assert_eq!(
+            Cli::parse_from(["lfm2d"]).describe_token_budget,
+            None,
+            "unset must mean today's behavior: the walk stops only at the context ceiling"
+        );
+        assert_eq!(
+            Cli::parse_from(["lfm2d", "--describe-token-budget", "64"]).describe_token_budget,
+            Some(64)
+        );
+    }
+
+    #[test]
+    fn describe_token_budget_env_falls_back_and_the_flag_wins() {
+        let _guard = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: guarded by PROBE_ENV_LOCK; no other thread reads or
+        // writes the environment while this lock is held.
+        unsafe {
+            std::env::set_var("LFM2D_DESCRIBE_TOKEN_BUDGET", "512");
+        }
+        assert_eq!(
+            Cli::parse_from(["lfm2d"]).describe_token_budget,
+            Some(512),
+            "the env var is a fallback, like LFM2D_ADJUDICATOR_* and LFM2D_PROBE"
+        );
+        assert_eq!(
+            Cli::parse_from(["lfm2d", "--describe-token-budget", "64"]).describe_token_budget,
+            Some(64),
+            "the flag on the command line outranks the env var"
+        );
+        // SAFETY: same guard; leave the environment clean for every other
+        // test in this file that parses a `Cli`.
+        unsafe {
+            std::env::remove_var("LFM2D_DESCRIBE_TOKEN_BUDGET");
+        }
+    }
+
+    #[test]
+    fn a_zero_describe_token_budget_stops_startup() {
+        let _guard = PROBE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: guarded by PROBE_ENV_LOCK.
+        unsafe {
+            std::env::remove_var("LFM2D_DESCRIBE_TOKEN_BUDGET");
+        }
+        // clap parses `0` (an `Option<usize>` accepts it); `validate` is
+        // what refuses it, at startup, naming the flag.
+        assert!(
+            Cli::try_parse_from(["lfm2d", "--describe-token-budget", "0"]).is_ok(),
+            "the refusal is validate's, so pin that it is validate that refuses"
+        );
+        let mut cli = adjudicator_only();
+        cli.describe_token_budget = Some(0);
+        let err = cli
+            .validate()
+            .expect_err("a budget of 0 refuses every describe before its first token");
+        assert!(err.contains("--describe-token-budget") && err.contains("at least 1"), "{err}");
+        // The env spelling reaches the same refusal.
+        let mut cli = adjudicator_only();
+        cli.describe_token_budget = Some(0);
+        let err = cli
+            .validate()
+            .expect_err("LFM2D_DESCRIBE_TOKEN_BUDGET=0 is the same deployment");
+        assert!(err.contains("--describe-token-budget"), "{err}");
+        // And a real budget validates.
+        for ok in [1, 64, 4096, usize::MAX] {
+            let mut cli = adjudicator_only();
+            cli.describe_token_budget = Some(ok);
+            cli
+                .validate()
+                .unwrap_or_else(|e| panic!("--describe-token-budget {ok} must be accepted: {e}"));
         }
     }
 }

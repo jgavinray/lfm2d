@@ -52,6 +52,7 @@ fn cli_with_token_classifier_only() -> Cli {
         adjudicator_tokenizer: None,
         adjudicator_context: 4096,
         adjudicator_repeat_penalty: 1.05,
+        describe_token_budget: None,
         opinion_specs: Vec::new(),
         opinion_spec_capacity: 8,
         chat_checkpoint_budget_mib: 16384,

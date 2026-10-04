@@ -328,3 +328,48 @@ fn describe_then_read_stands_at_the_generative_paths_own_slot() {
         );
     }
 }
+
+/// tobert/lfm2d#3 item 2, end to end on the real weights: a cold describe
+/// that would walk the whole context walks only as far as
+/// `--describe-token-budget` allows, then refuses through the engine-side
+/// error channel with a message naming the budget, the tokens it spent,
+/// and the slot it never reached. The un-budgeted twin of this exact read
+/// is what every other test in this file already exercises successfully,
+/// which is the "no new failure mode for healthy deployments" half of the
+/// contract. Weight-deferred like the rest of this file: NEVER claimed as
+/// verified from a CPU-only host.
+#[test]
+#[ignore = "loads and hashes the 6 GB LFM2.5-8B-A1B GGUF; minutes on a GPU host, hours on CPU"]
+fn a_describe_token_budget_refuses_a_walk_it_cannot_finish() {
+    let mut cli = cli();
+    // One token: the fixture's verdict read must describe `gist` and
+    // `feeling` first, so the walk cannot reach the slot and the budget,
+    // not the context ceiling, is what ends it.
+    cli.describe_token_budget = Some(1);
+    let mut adjudicator = support::load_adjudicator(&cli);
+    let menu = adjudicator.menu();
+    let entry: &SpecMenuEntry = menu
+        .iter()
+        .find(|e| e.spec == SPEC)
+        .expect("the fixture spec is on the menu");
+    let request: OpinionRequest = serde_json::from_value(serde_json::json!({
+        "spec": SPEC,
+        "state": {"input": "Someone logged into my account from another country and changed my email address."},
+        "questions": [{"field": "verdict"}],
+        "use_cache": false
+    }))
+    .unwrap();
+    let question = entry.resolve(&request.questions[0]).unwrap();
+    let err = adjudicator
+        .opine(&request, std::slice::from_ref(&question), &|| Ok(()))
+        .expect_err("one token cannot describe two fields before the slot");
+    match err {
+        lfm2d::adjudicator::Failure::Internal(message) => {
+            assert!(message.contains("1-token budget"), "{message}");
+            assert!(message.contains("--describe-token-budget"), "{message}");
+            assert!(message.contains("1 decoded tokens"), "{message}");
+            assert!(message.contains("\"verdict\""), "{message}");
+        }
+        other => panic!("budget exhaustion is an engine-side failure, got {other:?}"),
+    }
+}
