@@ -298,8 +298,8 @@ Errors: `{"error": {"message", "type"}}`. `type` is one of:
   daemon is shutting down;
 - `"overloaded"` (503) — the opinion engine's queue is full;
 - `"deadline"` (504) — the request's `timeout_ms` ran out;
-- `"internal"` (500) — a loaded model's forward pass failed, or a worker
-  thread died.
+- `"internal"` (500) — a loaded model's forward pass failed, a worker
+  thread died, or a describe walk exhausted `--describe-token-budget`.
 
 A consumer switching on `type` must treat an unknown value as an error.
 Never a silently-wrong `200`.
@@ -575,12 +575,15 @@ decided and why (also in the relevant doc comments):
   with the described-state cache cold, the read held the worker at one
   core until `timeout_ms`, then returned `cancelled`; warm reads take 79-97
   ms. It answers cancellation, so the worker is walking, not deadlocked.
-  The invisibility half is fixed (tobert/lfm2d#3 item 2): the walk now
-  logs at `info!` before its first token (spec, rendered-prompt tokens,
-  effective budget) and again on completion (tokens decoded, elapsed), and
-  `--describe-token-budget` caps the walk, refusing with an `"internal"`
-  that names the budget and what was spent. The slowness itself is NOT
-  fixed — the two cold describes that did finish took 17.8 and 25.7 s, and
+  The invisibility half is fixed (tobert/lfm2d#3 item 2): every describe
+  decode walk — cold, evicted-cache miss, or tail/checkpoint resume; only
+  a fully-warm described-cache hit decodes nothing — logs at `info!`
+  before its first token (spec, rendered-prompt tokens, effective budget)
+  and again on completion (tokens decoded, elapsed), and
+  `--describe-token-budget` caps every such walk, refusing with an
+  `"internal"` that names the budget and what was spent. The slowness
+  itself is NOT fixed — the two cold describes that did finish took 17.8
+  and 25.7 s, and
   the aliased router bias above remains the candidate contributing factor;
   re-run on the B70 after it. Not seen on ROCm or CUDA.
 - **SYCL: a stale kernels library survives a candle bump.**

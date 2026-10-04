@@ -345,6 +345,10 @@ fn a_describe_token_budget_refuses_a_walk_it_cannot_finish() {
     // One token: the fixture's verdict read must describe `gist` and
     // `feeling` first, so the walk cannot reach the slot and the budget,
     // not the context ceiling, is what ends it.
+    // Caveat for the B70 runner: if the model's FIRST sampled token were
+    // EOS, the loop breaks to the "description ended before the slot"
+    // error instead of the budget error — a spurious failure of THIS
+    // test, not a budget-gate bug; re-run before filing.
     cli.describe_token_budget = Some(1);
     let mut adjudicator = support::load_adjudicator(&cli);
     let menu = adjudicator.menu();

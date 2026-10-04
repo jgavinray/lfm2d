@@ -1709,9 +1709,21 @@ mod checkpoint_load_error_tests {
 /// of budget: `None` (the default) is unlimited — today's behavior, which
 /// a healthy ROCm/CUDA/SYCL deployment never leaves — and `Some(n)` stops
 /// the walk once `n` tokens are on the board. Pure so the gate is unit-
-/// tested without weights; the walk itself consults nothing else.
+/// tested without weights; the walk consults it once per iteration through
+/// `describe_walk_reached_budget`, the extracted loop head below.
 fn describe_budget_exhausted(budget: Option<usize>, decoded: usize) -> bool {
     budget.is_some_and(|budget| decoded >= budget)
+}
+
+/// The describe loop's per-iteration budget consult, extracted so the
+/// call site is testable: the real loop hands this its own `generated`
+/// vector before every sample, and the gate sees exactly that vector's
+/// length — no off-by-one in the hand-off is possible without failing
+/// `the_loop_head_counts_the_tokens_on_the_board`. The loop must call
+/// THIS and not `describe_budget_exhausted` directly: the pure-fn tests
+/// pin the boundary, these pin the shape feeding it.
+fn describe_walk_reached_budget(budget: Option<usize>, generated: &[u32]) -> bool {
+    describe_budget_exhausted(budget, generated.len())
 }
 
 /// The refusal when the walk exhausts its budget mid-describe: the walk's
@@ -1761,6 +1773,37 @@ mod describe_token_budget_tests {
         // `Cli::validate` refuses this spelling at startup; the gate itself
         // still behaves sanely rather than underflowing.
         assert!(describe_budget_exhausted(Some(0), 0));
+    }
+
+    /// Pins the call site, which the pure-fn boundary tests above cannot
+    /// reach: the describe loop's gate is
+    /// `describe_walk_reached_budget(self.describe_token_budget,
+    /// &generated)` at the head of the `for _ in prompt_ids.len()..
+    /// context_limit` body — the walk hands the gate its own `generated`
+    /// vector, before this iteration's sample/push. Replaying that exact
+    /// consult shape (gate head, sample, push) catches the one mutation
+    /// the boundary cannot: a loop-side `generated.len() + 1`, which
+    /// would cut the walk one token short of its budget (and misreport
+    /// the consumed count) while every pure-fn test above stayed green.
+    #[test]
+    fn the_loop_head_counts_the_tokens_on_the_board() {
+        // The loop's shape over the fn the loop actually calls: consult
+        // at the head with `&generated`, then (if not exhausted) sample
+        // and push; `ceiling` plays `context_limit`.
+        let drive = |budget: Option<usize>, ceiling: usize| -> usize {
+            let mut generated: Vec<u32> = Vec::new();
+            while generated.len() < ceiling {
+                if describe_walk_reached_budget(budget, &generated) {
+                    break;
+                }
+                generated.push(7); // the iteration's sampled token
+            }
+            generated.len()
+        };
+        assert_eq!(drive(Some(3), 64), 3, "the walk stops with exactly the budget on the board");
+        assert_eq!(drive(Some(1), 64), 1, "one token is one token, not zero and not two");
+        assert_eq!(drive(Some(64), 10), 10, "an in-budget walk ends on the ceiling, not the gate");
+        assert_eq!(drive(None, 40), 40, "unset budget: the ceiling decides, today's behavior");
     }
 
     /// The refusal is the walk's existing engine-side channel (`Internal`
@@ -3368,7 +3411,7 @@ impl Adjudicator {
                     // still short of `questions[slots.len()]`'s slot. With
                     // the flag unset this never fires, and the walk ends on
                     // the context range exactly as before.
-                    if describe_budget_exhausted(self.describe_token_budget, generated.len()) {
+                    if describe_walk_reached_budget(self.describe_token_budget, &generated) {
                         let budget = self.describe_token_budget.expect("the gate only fires when set");
                         let field = &questions[slots.len()].field;
                         tracing::error!(
