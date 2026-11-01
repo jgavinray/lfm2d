@@ -36,6 +36,13 @@ fn device_bytes(device: &candle_core::Device) -> u64 {
     if device.is_cuda() {
         return support::cuda_pool_bytes(device).used;
     }
+    #[cfg(feature = "sycl")]
+    if device.is_sycl() {
+        // The kernels crate's USM pool counts the bytes it handed to live
+        // buffers, the same account CUDA's pool `used` gives.
+        let candle_core::Device::Sycl(d) = device else { unreachable!() };
+        return d.queue().live_bytes() as u64;
+    }
     assert!(device.is_rocm(), "no per-process device memory account for {device:?}");
     let dir = format!("/sys/class/kfd/kfd/proc/{}", std::process::id());
     std::fs::read_dir(&dir)

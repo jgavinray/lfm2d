@@ -14,17 +14,17 @@ sycl = ["lfm2-encoder/sycl", "candle-transformers/sycl", "dep:candle-sycl-kernel
 
 [dependencies]
 lfm2-encoder = { path = ".." }
-candle-transformers = { git = "https://github.com/jgavinray/candle", rev = "542e3c658b023070ac091fb82c453cf9a768e33a" }
-candle-core = { git = "https://github.com/jgavinray/candle", rev = "542e3c658b023070ac091fb82c453cf9a768e33a" }
-candle-nn = { git = "https://github.com/jgavinray/candle", rev = "542e3c658b023070ac091fb82c453cf9a768e33a" }
+candle-transformers = { git = "https://github.com/jgavinray/candle", rev = "5f5e6ed74f9505f4e7d720e0b7a1a482eb050ee4" }
+candle-core = { git = "https://github.com/jgavinray/candle", rev = "5f5e6ed74f9505f4e7d720e0b7a1a482eb050ee4" }
+candle-nn = { git = "https://github.com/jgavinray/candle", rev = "5f5e6ed74f9505f4e7d720e0b7a1a482eb050ee4" }
 # CUDA only: the PTX candle's kernels were built as, whose header names the
 # nvcc that built them (the device identity, `device.rs`).
-candle-kernels = { git = "https://github.com/jgavinray/candle", rev = "542e3c658b023070ac091fb82c453cf9a768e33a", optional = true }
+candle-kernels = { git = "https://github.com/jgavinray/candle", rev = "5f5e6ed74f9505f4e7d720e0b7a1a482eb050ee4", optional = true }
 # SYCL only: `candle-sycl-kernels` declares `links = "candle_sycl"`, so Cargo
 # hands this crate's build script the directory that holds libcandle_sycl.so
 # and the icpx release that built it (build.rs, device.rs) — no scanning
 # target/ for the newest `candle-sycl-kernels-*` name.
-candle-sycl-kernels = { git = "https://github.com/jgavinray/candle", rev = "542e3c658b023070ac091fb82c453cf9a768e33a", optional = true }
+candle-sycl-kernels = { git = "https://github.com/jgavinray/candle", rev = "5f5e6ed74f9505f4e7d720e0b7a1a482eb050ee4", optional = true }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
