@@ -51,7 +51,13 @@ instead of being ignored.
 - **`input_label`** (required): one line, at most 64 bytes, no colon and no
   model control tokens. The daemon writes the colon.
 - **`system`** (required): plain text, no model control tokens
-  (`<|...`, `<think>`).
+  (`<|...`, `</think>`).
+- **Text-field budget**: a description generates every field before the last
+  asked slot, and a text field is not length-limited. `/v1/opinion` and
+  `/v1/adjudicate` size that generation at 64 tokens per field (at least 512,
+  capped by the context), and a read that needs more is refused with `422` and
+  a message naming the field and the budget. Keep a spec's text fields short,
+  or split them across specs.
 - **`output_schema`**: an object schema with exactly these top-level keys
   available: `type` (must be `"object"`), `additionalProperties` (must be
   `false`), `properties`, `required`, and optionally `description` and

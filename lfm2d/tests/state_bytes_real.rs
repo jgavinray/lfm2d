@@ -5,8 +5,10 @@
 //! on ROCm the kernel's (`/sys/class/kfd/kfd/proc/<pid>/vram_*`, which on
 //! gfx1151 is host memory the GPU maps), on CUDA the allocation pool's live
 //! bytes (`support::cuda_pool_bytes`; its reserved bytes grow in chunks of
-//! megabytes and do not move for a 200-token state). The candle ROCm
-//! allocator parks freed blocks by exact size and hands them back to the
+//! megabytes and do not move for a 200-token state), and on SYCL the kernels
+//! crate's live-byte account (`Queue::live_bytes`, the same semantics as
+//! CUDA's `used`; the child runs with the dequant cache disabled). The candle
+//! ROCm allocator parks freed blocks by exact size and hands them back to the
 //! next allocation of that size, so a block freed earlier in a process
 //! hides the cost of a later state. Each case therefore
 //! runs in a process of its own and frees nothing before it measures: build
@@ -98,7 +100,7 @@ fn measure(shape: &str, len: usize) {
 }
 
 #[test]
-#[ignore = "loads the 6 GB LFM2.5-8B-A1B GGUF once per case; ROCm or CUDA host"]
+#[ignore = "loads the 6 GB LFM2.5-8B-A1B GGUF once per case; ROCm, CUDA or SYCL host"]
 fn the_state_byte_bound_holds_on_the_device() {
     if let Ok(case) = std::env::var(CASE_ENV) {
         let (shape, len) = case.split_once(':').unwrap();
@@ -111,6 +113,9 @@ fn the_state_byte_bound_holds_on_the_device() {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--ignored", "--exact", "the_state_byte_bound_holds_on_the_device", "--nocapture"])
                 .env(CASE_ENV, format!("{shape}:{len}"))
+                // The dequant cache holds dense weight copies across states;
+                // keep the account to the state alone.
+                .env("CANDLE_SYCL_DEQUANT_CACHE_MIB", "0")
                 .output()
                 .unwrap();
             let stdout = String::from_utf8_lossy(&out.stdout);
