@@ -122,16 +122,25 @@ fn identity_of(device: &Device, backend: DeviceArg) -> Result<String, String> {
         Device::Rocm(d) => Ok(format!("rocm:{}:hip{}", d.arch(), d.hip_version())),
         #[cfg(feature = "sycl")]
         Device::Sycl(d) => {
-            // oneAPI 2026.x: the compiler release that built libcandle_sycl.so
-            // (its kernels JIT nothing at runtime), plus the GPU's own name —
-            // "sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics".
+            // What decides a SYCL result: the icpx release that compiled
+            // libcandle_sycl.so (its kernels are SPIR-V the driver JITs, so
+            // the installed driver also counts), and the GPU's own name —
+            // "sycl:icpx2026.1:drv1.28.6:Intel(R) Arc(TM) Pro B70 Graphics".
+            // The compiler release comes from the build that made the
+            // library, never from the host's oneAPI.
             let info = d
                 .queue()
                 .device_info()
                 .map_err(|e| format!("sycl identity: device info: {e}"))?;
-            let icpx = std::env::var("CANDLE_SYCL_ICPX_VERSION")
-                .unwrap_or_else(|_| "2026.1".into());
-            Ok(format!("sycl:{icpx}:{}", info.name))
+            if info.driver_version.is_empty() {
+                return Err("sycl identity: the driver reports no version".into());
+            }
+            Ok(format!(
+                "sycl:icpx{}:drv{}:{}",
+                candle_core::sycl_backend::k::ICPX_VERSION,
+                info.driver_version,
+                info.name
+            ))
         }
         #[cfg(feature = "cuda")]
         Device::Cuda(d) => {

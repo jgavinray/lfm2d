@@ -38,6 +38,14 @@ pub const CANDLE_REV: &str = env!("LFM2D_CANDLE_REV");
 /// puts it anywhere else.
 const EOS: u32 = 124900;
 const MAX_NEW: usize = 2048;
+
+/// Cap on the tokens one opinion description may generate. The grammar walk
+/// stops at each question's slot and a ten-field spec needs well under a
+/// hundred tokens; a run that needs more is a spec or model problem, not a
+/// reason to decode to `context_limit`. Before this, `describe_then_read`
+/// could walk thousands of tokens with no log until it finished (the cold
+/// describe seen on the B70, 2026-10-02).
+const DESCRIBE_TOKEN_BUDGET: usize = 512;
 /// `/v1/adjudicate`'s input cap: `/v1/opinion`'s 64 KiB state plus
 /// headroom for the rendered `{input_label}:\n`, so an escalation of a
 /// full-size opinion is never refused (pinned by
@@ -3246,6 +3254,15 @@ impl Adjudicator {
                 }
                 let prefill_ms = begin.elapsed().as_secs_f64() * 1000.;
                 let describe = Instant::now();
+                let describe_budget =
+                    (context_limit - prompt_ids.len()).min(DESCRIBE_TOKEN_BUDGET);
+                tracing::info!(
+                    spec = %spec.id,
+                    prompt_tokens = prompt_ids.len(),
+                    context_limit,
+                    describe_budget,
+                    "opinion: describing the input"
+                );
                 let mut sampler = crate::constrain::Decoder::new(
                     Some(&grammar),
                     logits.device(),
@@ -3257,7 +3274,7 @@ impl Adjudicator {
                 let mut text = String::new();
                 let mut slots = Vec::with_capacity(questions.len());
                 let mut slot_text = questions[0].slot_text();
-                for _ in prompt_ids.len()..context_limit {
+                for _ in 0..describe_budget {
                     check()?;
                     let token = sampler.sample(&logits)?;
                     if self.tokenizer.id_to_token(token).is_none() {
@@ -3324,7 +3341,7 @@ impl Adjudicator {
                     // ending the turn where the grammar forbids it — loud,
                     // never a read off the wrong slot.
                     return Err(Failure::Internal(format!(
-                        "description ended before the {:?} slot after {} tokens: {text:?}",
+                        "description ended before the {:?} slot after {} tokens (budget {describe_budget}): {text:?}",
                         questions[slots.len()].field,
                         generated.len()
                     )));
@@ -3332,6 +3349,12 @@ impl Adjudicator {
                 logits.device().synchronize()?;
                 check()?;
                 let describe_ms = describe.elapsed().as_secs_f64() * 1000.;
+                tracing::debug!(
+                    spec = %spec.id,
+                    described_tokens = generated.len(),
+                    describe_ms,
+                    "opinion: describe finished"
+                );
                 (slots, cached_tokens, prefill_ms, describe_ms)
             }
         };
