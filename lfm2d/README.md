@@ -52,8 +52,9 @@ packs once per layer, while SYCL reports `false` and switches to its grouped
 GEMM inside each indexed call. F8E4M3 is unimplemented on SYCL and errors
 loudly. The `sycl` build compiles `candle-sycl-kernels` with `icpx`; a
 plain `cargo build` never touches oneAPI. After a candle revision bump,
-clear `target/release/build/candle-sycl-kernels-*` (see the problems
-list below).
+the kernels directory comes from the kernels crate's `links` metadata
+(fixed 2026-11-01, below), so a stale `candle-sycl-kernels-*` build is
+never picked by name.
 
 Candle core/nn/transformers are pinned together to one revision of our fork
 (`tobert/candle`, branch `lfm25-batch`) because crates.io 0.11 carries no
@@ -292,7 +293,9 @@ Errors: `{"error": {"message", "type"}}`. `type` is one of:
 - `"insufficient_storage"` (507) — a pin past half the checkpoint budget,
   or a checkpoint or context that does not fit beside the pins;
 - `"unprocessable"` (422) — an uploaded spec that parses but cannot be
-  served (the load-time refusal text is the message);
+  served (the load-time refusal text is the message), or a `/v1/opinion`
+  description that ran out of tokens before its slot (the message names the
+  field and whether the spec's budget or the context bound it);
 - `"cancelled"` (408) — the client went away before the answer, or the
   daemon is shutting down;
 - `"overloaded"` (503) — the opinion engine's queue is full;
@@ -570,13 +573,16 @@ findings that needed an Intel GPU. They are fixed in candle
 - **`lfm2d/build.rs` takes the kernels directory from the kernels crate's
   `links` metadata** (`DEP_CANDLE_SYCL_ROOT`), so a stale
   `candle-sycl-kernels-*` build cannot be picked by name.
-- **A description logs its start and stops at 512 generated tokens**
-  (`DESCRIBE_TOKEN_BUDGET`), so a cold `/v1/opinion` read can no longer walk
-  to the client deadline with nothing in the log. Re-running the B70
-  cold-describe repro after the freed-memory fix is still outstanding; the
-  aliased router bias was the suspected cause.
+- **A description logs its start and is bounded**: 64 generated tokens per
+  field up to the last asked slot, at least 512 (`DESCRIBE_TOKEN_BUDGET`),
+  capped by the context; a read that runs out is a `422` naming the field.
+  A cold `/v1/opinion` read can no longer walk to the client deadline with
+  nothing in the log. The B70 cold-describe repro passes after the
+  freed-memory fix (`opinion_real`), so the aliased router bias was the
+  cause.
 
 ## Problems noted, not fixed
+
 - **Spec registration telemetry has no source address.** The daemon has
   no `ConnectInfo` wiring, so a registration or eviction log line cannot
   say who uploaded the spec.

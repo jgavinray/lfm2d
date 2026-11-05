@@ -52,6 +52,14 @@ const MAX_NEW: usize = 2048;
 const DESCRIBE_TOKEN_BUDGET: usize = 512;
 /// Tokens allowed per field when sizing a description's budget.
 const DESCRIBE_TOKENS_PER_FIELD: usize = 64;
+
+/// The tokens a description may generate for `fields` fields (every field up
+/// to and including the last asked slot) when `remaining` tokens of context
+/// are left after the prompt: the per-field allowance, never below
+/// [`DESCRIBE_TOKEN_BUDGET`], never past the context.
+fn describe_budget(fields: usize, remaining: usize) -> usize {
+    remaining.min(DESCRIBE_TOKEN_BUDGET.max(DESCRIBE_TOKENS_PER_FIELD.saturating_mul(fields)))
+}
 /// `/v1/adjudicate`'s input cap: `/v1/opinion`'s 64 KiB state plus
 /// headroom for the rendered `{input_label}:\n`, so an escalation of a
 /// full-size opinion is never refused (pinned by
@@ -452,7 +460,10 @@ pub enum Failure {
     /// refusals `LoadedSpec::load` runs (grammar compile, tokenization,
     /// opinion block split) — the same checks a boot spec passes before it
     /// ever reaches a request, now surfaced to the uploader instead of
-    /// exiting the process.
+    /// exiting the process. Also a `/v1/opinion` read whose description ran
+    /// out of tokens before its slot (the spec's per-field budget or the
+    /// context the input leaves): the request is well formed, the spec and
+    /// input together cannot be served.
     Unprocessable(String),
     /// A boot-time spec cannot be deleted — `DELETE /v1/opinion/specs/{id}`
     /// against an `--opinion-spec`.
@@ -1647,6 +1658,30 @@ mod failure_wire_tests {
         for (failure, status, expected) in cases {
             assert_eq!(kind(failure).await, (status, expected.to_string()));
         }
+    }
+}
+
+#[cfg(test)]
+mod describe_budget_tests {
+    use super::*;
+
+    #[test]
+    fn the_floor_holds_for_a_short_spec() {
+        assert_eq!(describe_budget(1, 4000), DESCRIBE_TOKEN_BUDGET);
+        assert_eq!(describe_budget(8, 4000), DESCRIBE_TOKEN_BUDGET);
+    }
+
+    #[test]
+    fn the_allowance_scales_past_the_floor_with_the_fields() {
+        let fields = DESCRIBE_TOKEN_BUDGET / DESCRIBE_TOKENS_PER_FIELD + 2;
+        assert_eq!(describe_budget(fields, 100_000), fields * DESCRIBE_TOKENS_PER_FIELD);
+    }
+
+    #[test]
+    fn the_context_caps_the_allowance() {
+        assert_eq!(describe_budget(1, 3), 3);
+        assert_eq!(describe_budget(1_000, 700), 700);
+        assert_eq!(describe_budget(usize::MAX, 9), 9);
     }
 }
 
@@ -3264,13 +3299,8 @@ impl Adjudicator {
                 // text field is not length-limited, so the allowance scales
                 // with the spec instead of a fixed cap that would refuse
                 // valid multi-field specs.
-                let fields = questions
-                    .last()
-                    .map_or(1, |q| q.describe.len().saturating_add(1));
-                let describe_budget = (context_limit - prompt_ids.len()).min(
-                    DESCRIBE_TOKEN_BUDGET
-                        .max(DESCRIBE_TOKENS_PER_FIELD.saturating_mul(fields)),
-                );
+                let remaining = context_limit - prompt_ids.len();
+                let describe_budget = describe_budget(last.describe.len() + 1, remaining);
                 tracing::info!(
                     spec = %request.spec,
                     spec_id = %spec.id,
@@ -3353,24 +3383,29 @@ impl Adjudicator {
                 }
                 if slots.len() < questions.len() {
                     // The grammar makes every field reachable and required,
-                    // so this is one of three things: the spec's own
-                    // allowance ran out (a spec problem, told apart below),
-                    // the context ran out, or the model ended the turn where
-                    // the grammar forbids it — loud, never a read off the
-                    // wrong slot.
+                    // so this is one of two things: the allowance ran out
+                    // (the spec's per-field budget, or the context the input
+                    // left — both a spec or input problem, refused as 422),
+                    // or the model ended the turn where the grammar forbids
+                    // it — loud, never a read off the wrong slot.
                     let field = &questions[slots.len()].field;
-                    let context_bound = describe_budget == context_limit - prompt_ids.len();
-                    if generated.len() == describe_budget && !context_bound {
+                    if generated.len() == describe_budget {
+                        let bound = if describe_budget == remaining {
+                            "the context the input leaves"
+                        } else {
+                            "the spec's per-field budget"
+                        };
                         tracing::warn!(
                             spec = %request.spec,
                             spec_id = %spec.id,
                             field = %field,
                             described_tokens = generated.len(),
                             describe_budget,
-                            "opinion: description hit the token budget before the slot"
+                            bound,
+                            "opinion: description ran out of tokens before the slot"
                         );
                         return Err(Failure::Unprocessable(format!(
-                            "description ended before the {field:?} slot after {} tokens (budget {describe_budget}): the spec's text fields need more tokens",
+                            "description ended before the {field:?} slot after {} tokens ({bound}, {describe_budget} tokens): shorten the input or the spec's text fields",
                             generated.len()
                         )));
                     }

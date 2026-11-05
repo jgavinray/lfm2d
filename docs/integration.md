@@ -104,10 +104,10 @@ for the opinion vocabulary. `described` is an ordered list of
 `{field, value}`, not an object; the order is the spec's. The menu now
 also carries uploads (invariant 12) beside the boot-time specs. A
 description generates every field before the last asked slot and is
-bounded at 64 tokens per field (at least 512, capped by the context); a
-read that needs more is refused with `422`, naming the field and the
-budget, so a spec whose text fields run long is a spec problem, not a
-server failure.
+bounded at 64 tokens per field (at least 512, capped by the context the
+input leaves); a read that needs more is refused with `422`, naming the
+field and which bound it hit, so long text fields or a long input are a
+spec or input problem, not a server failure.
 
 **12. A spec's `id` is a content hash; an unknown `spec` means upload it.**
 Every menu entry (boot or uploaded) has an `id`: the lowercase hex sha256

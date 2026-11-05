@@ -89,8 +89,9 @@ What keeps a port cheap:
   never carry a threshold across. `snapshot_id` hashes the device identity
   (`rocm:gfx1151:hip7.2`, `cuda:sm_121:nvcc13.0:drv580.173.02`: the
   driver JIT-compiles candle's PTX, so it counts;
-  `sycl:2026.1:Intel(R) Arc(TM) Pro B70 Graphics`, which does not yet
-  name the driver that JIT-compiles its SPIR-V) and the candle revision.
+  `sycl:icpx2026.1:drv1.28.6:Intel(R) Arc(TM) Pro B70 Graphics`: the icpx
+  that built the kernels and the driver that JIT-compiles their SPIR-V) and
+  the candle revision.
 - Real-test memory figures read the driver's per-process account: KFD and
   DRM fdinfo on ROCm, the allocation pool on CUDA
   (`support::cuda_pool_bytes`: `used` sizes a state; `reserved`, what the
