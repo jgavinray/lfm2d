@@ -14,18 +14,18 @@ sycl = ["lfm2-encoder/sycl", "candle-transformers/sycl", "dep:candle-sycl-kernel
 
 [dependencies]
 lfm2-encoder = { path = ".." }
-candle-transformers = { git = "https://github.com/jgavinray/candle", rev = "c8ffc90373905bc9f73c404d4944c3a1b14aaed7" }
-candle-core = { git = "https://github.com/jgavinray/candle", rev = "c8ffc90373905bc9f73c404d4944c3a1b14aaed7" }
-candle-nn = { git = "https://github.com/jgavinray/candle", rev = "c8ffc90373905bc9f73c404d4944c3a1b14aaed7" }
+candle-transformers = { git = "https://github.com/tobert/candle", rev = "d72b9a8c2bc52d56ac43a351f9ef50fa4008c156" }
+candle-core = { git = "https://github.com/tobert/candle", rev = "d72b9a8c2bc52d56ac43a351f9ef50fa4008c156" }
+candle-nn = { git = "https://github.com/tobert/candle", rev = "d72b9a8c2bc52d56ac43a351f9ef50fa4008c156" }
 # CUDA only: the PTX candle's kernels were built as, whose header names the
 # nvcc that built them (the device identity, `device.rs`).
-candle-kernels = { git = "https://github.com/jgavinray/candle", rev = "c8ffc90373905bc9f73c404d4944c3a1b14aaed7", optional = true }
+candle-kernels = { git = "https://github.com/tobert/candle", rev = "d72b9a8c2bc52d56ac43a351f9ef50fa4008c156", optional = true }
 # SYCL only: `candle-sycl-kernels` declares `links = "candle_sycl"`, so Cargo
 # hands this crate's build script the directory that holds libcandle_sycl.so
 # (build.rs) — no scanning target/ for the newest `candle-sycl-kernels-*` name.
 # The icpx release that built the library is compiled into candle-core
 # (`ICPX_VERSION`), which device.rs reads.
-candle-sycl-kernels = { git = "https://github.com/jgavinray/candle", rev = "c8ffc90373905bc9f73c404d4944c3a1b14aaed7", optional = true }
+candle-sycl-kernels = { git = "https://github.com/tobert/candle", rev = "d72b9a8c2bc52d56ac43a351f9ef50fa4008c156", optional = true }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }

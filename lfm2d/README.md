@@ -551,7 +551,7 @@ decided and why (also in the relevant doc comments):
 
 [tobert/lfm2d#3](https://github.com/tobert/lfm2d/issues/3) listed SYCL
 findings that needed an Intel GPU. They are fixed in candle
-`c8ffc903` (this pin) and here:
+`d72b9a8c` (this pin) and here:
 
 - **The 8B engine's router bias and conv weights no longer alias freed
   memory.** `QSyclStorage::dequantize`/`dequantize_f16` return owned
